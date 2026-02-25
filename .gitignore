@@ -1,0 +1,84 @@
+# ================
+# Non-code .gitignore
+# ================
+
+# Operating system files
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+Icon?
+
+# Visual Studio / IDE
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.VC.db
+.vscode/
+*.code-workspace
+.idea/
+
+# Build artifacts and intermediate files
+bin/
+obj/
+Debug/
+Release/
+x64/
+build/
+out/
+*.wav
+*.o
+*.obj
+*.lib
+*.exp
+*.ilk
+*.pdb
+*.ipdb
+*.iobj
+*.dll
+*.exe
+
+# Package and installer outputs
+*.msi
+*.msix
+*.msixbundle
+*.nupkg
+*.recipe
+*.zip
+*.7z
+
+# Logs, reports, and test results
+*.log
+TestResults/
+coverage/
+coverage.xml
+*.trx
+*.md
+
+# Temporary and backup files
+*~
+*.tmp
+*.temp
+*.swp
+*.swo
+*.bak
+*.orig
+*.rej
+
+# Secrets and environment files
+.env
+.env.local
+secrets/
+*.pem
+*.key
+
+# Third-party / runtime folders
+node_modules/
+dist/
+
+# Misc
+.vagrant/
+packer_cache/
+

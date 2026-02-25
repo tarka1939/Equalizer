@@ -1,0 +1,44 @@
+; Realtek-targeted Extension INF (compliant skeleton)
+; This package can be staged/installed with pnputil as a device extension.
+;
+; IMPORTANT
+; - A compliant Extension INF cannot write arbitrary HKLM\...\MMDevices keys or run legacy RegisterDlls.
+; - System effect activation (SFX/MFX) on Win11 requires the Audio Effects Discovery model; this INF only establishes a device-associated extension package.
+
+[Version]
+Signature="$WINDOWS NT$"
+Class=Extension
+ClassGuid={E2F84CE7-8EFA-411C-AA69-97454CA4CB57}
+Provider=%ProviderName%
+DriverVer=01/05/2026,1.0.0.0
+PnpLockdown=1
+; Required for Extension INFs
+ExtensionId={B7B4A6B2-2D3A-48A4-8B4A-5E0D7D6C9B2E}
+CatalogFile=EqualizerRealtekExtension.cat
+
+[Manufacturer]
+%MfgName%=Models,NTamd64
+
+[Models.NTamd64]
+%EqualizerExtDesc%=EqualizerExt_Install, HDAUDIO\FUNC_01&VEN_10EC&DEV_0287&SUBSYS_17AA3841&REV_1000
+
+; --------------------
+; Extension Install
+; --------------------
+[EqualizerExt_Install]
+AddReg=EqualizerExt_AddReg
+
+[EqualizerExt_Install.NTamd64]
+AddReg=EqualizerExt_AddReg
+
+; Device-scoped registry additions must be isolated to HKR.
+; Placeholder key to prove install; replace with real Audio Effects Discovery registration as needed.
+[EqualizerExt_AddReg]
+HKR,"Settings","Installed",0x00010001,1
+
+; Uninstall is handled when pnputil removes the package.
+
+[Strings]
+ProviderName="Equalizer"
+MfgName="Equalizer"
+EqualizerExtDesc="Equalizer Realtek Extension (Test)"

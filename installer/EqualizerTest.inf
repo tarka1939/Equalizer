@@ -1,0 +1,62 @@
+; Test-only INF for installing Equalizer APO DLL and attaching it to a specific render endpoint.
+; Replace {REPLACE-WITH-ENDPOINT-GUID} before installing.
+;
+; WARNING
+; - This is for local testing only.
+; - Endpoint FX may still be blocked by the device/driver policy.
+
+[Version]
+Signature="$WINDOWS NT$"
+Class=Media
+ClassGuid={4d36e96c-e325-11ce-bfc1-08002be10318}
+Provider=%ProviderName%
+DriverVer=01/05/2026,1.0.0.0
+
+[DestinationDirs]
+CopyFiles.Sys32=11
+
+[SourceDisksNames]
+1=%DiskName%,, ,""
+
+[SourceDisksFiles]
+Equalizer.dll=1
+
+; --------------------
+; Install
+; --------------------
+[DefaultInstall]
+CopyFiles=CopyFiles.Sys32
+RegisterDlls=Register.Equalizer
+AddReg=AddReg.EndpointFx
+
+[CopyFiles.Sys32]
+Equalizer.dll
+
+; Calls DllRegisterServer (silent)
+[Register.Equalizer]
+11,,Equalizer.dll,1
+
+; Attach effect to endpoint FX properties
+; {d04e05a6-594b-4fb6-a80d-01af5eed7d1d},5 = PKEY_FX_StreamEffectClsid
+; {d04e05a6-594b-4fb6-a80d-01af5eed7d1d},6 = PKEY_FX_ModeEffectClsid
+[AddReg.EndpointFx]
+HKLM,"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render\{312a1cfb-cb49-4bbe-a050-6745dd210145}\FxProperties","{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},5",0x00000000,"{12345678-9ABC-4DEF-8011-223344556677}"
+HKLM,"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render\{312a1cfb-cb49-4bbe-a050-6745dd210145}\FxProperties","{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},6",0x00000000,"{12345678-9ABC-4DEF-8011-223344556677}"
+
+; --------------------
+; Uninstall
+; --------------------
+[DefaultUninstall]
+DelReg=DelReg.EndpointFx
+UnregisterDlls=Unregister.Equalizer
+
+[Unregister.Equalizer]
+11,,Equalizer.dll,1
+
+[DelReg.EndpointFx]
+HKLM,"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render\{312a1cfb-cb49-4bbe-a050-6745dd210145}\FxProperties","{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},5"
+HKLM,"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render\{312a1cfb-cb49-4bbe-a050-6745dd210145}\FxProperties","{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},6"
+
+[Strings]
+ProviderName="EqualizerTest"
+DiskName="EqualizerTestDisk"
