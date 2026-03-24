@@ -1,0 +1,104 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:EqualizerGUI.ViewModels"
+        xmlns:views="using:EqualizerGUI.Views"
+        mc:Ignorable="d"
+        x:Class="EqualizerGUI.Views.MainWindow"
+        x:DataType="vm:MainViewModel"
+        Title="System Equalizer"
+        Width="900" Height="600"
+        MinWidth="700" MinHeight="480"
+        Background="#1A1A2E">
+
+    <Window.Styles>
+        <!-- Slider track -->
+        <Style Selector="Slider">
+            <Setter Property="Foreground" Value="#7C5CBF"/>
+            <Setter Property="Background" Value="#2D2D44"/>
+        </Style>
+        <!-- Band label -->
+        <Style Selector="TextBlock.BandLabel">
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Foreground" Value="#A0A0C0"/>
+            <Setter Property="HorizontalAlignment" Value="Center"/>
+        </Style>
+        <!-- Gain display -->
+        <Style Selector="TextBlock.GainValue">
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Foreground" Value="#C8B8FF"/>
+            <Setter Property="HorizontalAlignment" Value="Center"/>
+        </Style>
+    </Window.Styles>
+
+    <Grid RowDefinitions="Auto,*,Auto,Auto" Margin="16">
+
+        <!-- ── Toolbar ───────────────────────────────────────────────────── -->
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="8" Margin="0,0,0,12">
+            <Button Content="Connect"        Command="{Binding ConnectCommand}"     />
+            <Button Content="Open Preset"    Command="{Binding OpenPresetCommand}"  />
+            <Button Content="Save Preset"    Command="{Binding SavePresetCommand}"  />
+            <Button Content="Room Correction" Command="{Binding RunCurveGenCommand}" />
+            <Button Content="Reset"          Command="{Binding ResetCommand}"
+                    Background="#3D2B4E" Foreground="White"/>
+            <ToggleButton Content="EQ On" IsChecked="{Binding Enabled}"
+                          Margin="12,0,0,0"/>
+        </StackPanel>
+
+        <!-- ── EQ Curve Canvas (simple polyline visualiser) ─────────────── -->
+        <Border Grid.Row="1" Background="#14142A" CornerRadius="8"
+                Margin="0,0,0,12" Padding="8">
+            <views:EqCurveView Bands="{Binding Bands}"/>
+        </Border>
+
+        <!-- ── 10-Band Sliders ───────────────────────────────────────────── -->
+        <ItemsControl Grid.Row="2" ItemsSource="{Binding Bands}">
+            <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                    <UniformGrid Rows="1"/>
+                </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="vm:BandViewModel">
+                    <StackPanel Spacing="4" HorizontalAlignment="Center">
+                        <!-- Gain value label -->
+                        <TextBlock Text="{Binding GainDb, StringFormat={}{0:+0.0;-0.0;·0.0} dB}"
+                                   Classes="GainValue"/>
+                        <!-- Vertical slider: +12 dB at top, -12 at bottom -->
+                        <Slider Orientation="Vertical"
+                                Height="140"
+                                Minimum="-12" Maximum="12"
+                                SmallChange="0.5" LargeChange="1.0"
+                                TickFrequency="3" IsSnapToTickEnabled="False"
+                                Value="{Binding GainDb}"/>
+                        <!-- Frequency label -->
+                        <TextBlock Text="{Binding Label}" Classes="BandLabel"/>
+                    </StackPanel>
+                </DataTemplate>
+            </ItemsControl.ItemTemplate>
+        </ItemsControl>
+
+        <!-- ── Status Bar ────────────────────────────────────────────────── -->
+        <Grid Grid.Row="3" ColumnDefinitions="*,Auto" Margin="0,8,0,0">
+            <TextBlock Grid.Column="0"
+                       Text="{Binding StatusText}"
+                       Foreground="#7070A0" FontSize="12"
+                       VerticalAlignment="Center"/>
+            <!-- Preamp knob -->
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8"
+                        VerticalAlignment="Center">
+                <TextBlock Text="Preamp" Foreground="#A0A0C0" FontSize="12"
+                           VerticalAlignment="Center"/>
+                <Slider Minimum="-20" Maximum="6" Width="120"
+                        TickFrequency="1"
+                        Value="{Binding PreampDb}"/>
+                <TextBlock Text="{Binding PreampDb, StringFormat={}{0:+0.0;-0.0;0.0} dB}"
+                           Foreground="#C8B8FF" FontSize="12"
+                           VerticalAlignment="Center" Width="60"/>
+            </StackPanel>
+        </Grid>
+
+    </Grid>
+</Window>

@@ -1,0 +1,13 @@
+{
+    "python.defaultInterpreterPath": "${workspaceFolder}/CurveGen/.venv/Scripts/python.exe",
+    "python.venvFolders": [
+        "CurveGen/.venv"
+    ],
+    "[python]": {
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "ms-python.black-formatter"
+    },
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}/CurveGen"
+    ]
+}

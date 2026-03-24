@@ -5,6 +5,8 @@ VisualStudioVersion = 17.13.35931.197 d17.13
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Equalizer", "Equalizer\Equalizer.vcxproj", "{40B07A2B-E6EA-4957-A07D-2F2A09B70F32}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GUI", "GUI\GUI.csproj", "{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -21,6 +23,10 @@ Global
 		{40B07A2B-E6EA-4957-A07D-2F2A09B70F32}.Release|x64.Build.0 = Release|x64
 		{40B07A2B-E6EA-4957-A07D-2F2A09B70F32}.Release|x86.ActiveCfg = Release|Win32
 		{40B07A2B-E6EA-4957-A07D-2F2A09B70F32}.Release|x86.Build.0 = Release|Win32
+		{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}.Debug|x64.ActiveCfg = Debug|AnyCPU
+		{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}.Debug|x64.Build.0 = Debug|AnyCPU
+		{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}.Release|x64.ActiveCfg = Release|AnyCPU
+		{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}.Release|x64.Build.0 = Release|AnyCPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eq-curvegen"
+version = "1.0.0"
+description = "Acoustic room-correction curve generator for the Equalizer project"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Krzysztof Tarka" }]
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.12",
+    "matplotlib>=3.8",   # optional: only used for --plot flag
+    "jsonschema>=4.21",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov",
+]
+
+[project.scripts]
+eq-curvegen = "curvegen.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["curvegen*"]

@@ -16,9 +16,10 @@ Icon?
 *.userosscache
 *.sln.docstates
 *.VC.db
-.vscode/
+# .vscode is tracked (contains shared interpreter/formatter settings)
 *.code-workspace
 .idea/
+
 
 # Build artifacts and intermediate files
 bin/
@@ -77,6 +78,17 @@ secrets/
 # Third-party / runtime folders
 node_modules/
 dist/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
 
 # Misc
 .vagrant/

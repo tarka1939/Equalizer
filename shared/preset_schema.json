@@ -1,0 +1,59 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/ktarka/equalizer/preset_schema.json",
+  "title": "EQ Preset",
+  "description": "Equalizer preset file format shared between the daemon, GUI, and CurveGen.",
+  "type": "object",
+  "required": ["version", "name", "preamp_db", "bands"],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Schema version."
+    },
+    "name": {
+      "type": "string",
+      "description": "Human-readable preset name."
+    },
+    "description": {
+      "type": "string",
+      "description": "Optional longer preset description."
+    },
+    "preamp_db": {
+      "type": "number",
+      "minimum": -30,
+      "maximum": 30,
+      "description": "Global preamp gain applied before all band filters (dB)."
+    },
+    "bands": {
+      "type": "array",
+      "minItems": 10,
+      "maxItems": 10,
+      "description": "Exactly 10 EQ bands in ascending centre-frequency order.",
+      "items": {
+        "type": "object",
+        "required": ["hz", "gain_db"],
+        "properties": {
+          "hz": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "description": "Band centre frequency in Hz."
+          },
+          "gain_db": {
+            "type": "number",
+            "minimum": -30,
+            "maximum": 30,
+            "description": "Band gain in dB."
+          },
+          "q": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "description": "Optional Q factor override for this band (default: 1.0)."
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
