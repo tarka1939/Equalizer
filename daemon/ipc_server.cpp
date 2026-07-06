@@ -202,7 +202,10 @@ void IpcServer::HandleClient(int fd) {
             std::string line = buf.substr(0, pos);
             buf.erase(0, pos + 1);
             std::string resp = ProcessCommand(line);
-            ::write(fd, resp.c_str(), resp.size());
+            if (::write(fd, resp.c_str(), resp.size()) < 0) {
+                // Client likely disconnected; drop the connection.
+                break;
+            }
         }
     }
     ::close(fd);

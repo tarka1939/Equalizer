@@ -30,11 +30,27 @@ class TestComputeCorrection:
         np.testing.assert_allclose(gains, 0.0, atol=0.5)
 
     def test_correction_inverts_boost(self):
-        """A +6 dB peak at 1 kHz should produce ~-6 dB correction there."""
+        """A +6 dB peak at 4 kHz (relative to the 1 kHz reference) should
+        produce a negative correction there.
+
+        Note: a boost located exactly AT 1 kHz is a degenerate case for this
+        algorithm, since every band's gain is computed relative to whatever
+        the response measures at 1 kHz (see compute_correction's docstring/
+        comments) — a peak at the reference frequency itself always
+        corrects to ~0 by construction. So this test uses a different band
+        to exercise the actual inversion behaviour.
+        """
+        freqs, mag = make_boosted_response(4000, 6.0)
+        gains, _ = compute_correction(freqs, mag, auto_preamp=False)
+        # Band index 7 is 4000 Hz
+        assert gains[7] < -3.0, f"Expected negative correction at 4kHz, got {gains[7]:.2f}"
+
+    def test_boost_at_reference_frequency_is_self_cancelling(self):
+        """A boost located exactly at 1 kHz (the reference point) should
+        correct to ~0, since gains are defined relative to the 1 kHz level."""
         freqs, mag = make_boosted_response(1000, 6.0)
         gains, _ = compute_correction(freqs, mag, auto_preamp=False)
-        # Band index 5 is 1000 Hz
-        assert gains[5] < -3.0, f"Expected negative correction at 1kHz, got {gains[5]:.2f}"
+        assert abs(gains[5]) < 0.5, f"Expected ~0 correction at 1kHz, got {gains[5]:.2f}"
 
     def test_gains_clipped_to_max(self):
         """Gains must never exceed max_gain_db."""

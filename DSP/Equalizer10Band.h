@@ -2,6 +2,7 @@
 
 #include "Biquad.h"
 #include <array>
+#include <cstddef>
 #include <cstdint>
 
 namespace DSP

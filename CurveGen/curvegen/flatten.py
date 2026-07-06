@@ -68,13 +68,17 @@ def compute_correction(
     # Correction = invert the measured response (target = flat = 0 dBFS)
     gains_db = -meas_at_bands
 
-    # Reference to 0 dB at 1 kHz
-    gains_db -= np.interp(np.log10(1000.0), log_freqs, magnitude_db)
+    # Reference to 0 dB at 1 kHz. Measured levels from measurement.py are on an
+    # arbitrary (uncalibrated) scale, so every band's correction is expressed
+    # relative to whatever the response happens to measure at 1 kHz, by
+    # convention. gain(f) = level(1kHz) - level(f).
+    ref_1khz_db = np.interp(np.log10(1000.0), log_freqs, magnitude_db)
+    gains_db += ref_1khz_db
 
     # Optionally blend toward Harman target
     if use_harman_target:
         harman_at_bands = np.interp(bands, _HARMAN_HZ, _HARMAN_DB)
-        gains_db = (1.0 - harman_blend) * gains_db + harman_blend * (-meas_at_bands + harman_at_bands)
+        gains_db = (1.0 - harman_blend) * gains_db + harman_blend * (-meas_at_bands + ref_1khz_db + harman_at_bands)
 
     # Clip per-band
     gains_db = np.clip(gains_db, -max_gain_db, max_gain_db)

@@ -21,7 +21,7 @@ namespace DSP
             float a1; // a0 assumed = 1.0f
             float a2;
         };
-		float M_PI = 3.14159265358979323846f;
+
         Biquad() noexcept;
         ~Biquad() = default;
 
