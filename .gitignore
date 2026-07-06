@@ -56,7 +56,10 @@ TestResults/
 coverage/
 coverage.xml
 *.trx
-*.md
+
+# Standalone report exports not meant to live in the repo
+# (project .md docs -- README, guides, protocol references -- ARE tracked)
+*.pdf
 
 # Temporary and backup files
 *~
@@ -93,4 +96,3 @@ htmlcov/
 # Misc
 .vagrant/
 packer_cache/
-

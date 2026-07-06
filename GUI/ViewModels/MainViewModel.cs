@@ -271,6 +271,6 @@ public sealed class MainViewModel : ReactiveObject, IDisposable
         _bandSubscription?.Dispose();
         _preampSubscription?.Dispose();
         _enabledSubscription?.Dispose();
-        _ipc.DisposeAsync().AsTask().Wait(500);
+        _ipc.Dispose();
     }
 }

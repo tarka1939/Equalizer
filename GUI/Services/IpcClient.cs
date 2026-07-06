@@ -10,12 +10,12 @@ namespace EqualizerGUI.Services;
 /// - Linux/Mac: Unix domain socket at /tmp/eq-daemon.sock
 /// - Windows:   Named pipe \\.\pipe\eq-daemon  (future)
 /// </summary>
-public sealed class IpcClient : IAsyncDisposable
+public sealed class IpcClient : IDisposable
 {
     private const string UnixSocketPath = "/tmp/eq-daemon.sock";
     private const string WindowsPipeName = @"\\.\pipe\eq-daemon";
 
-    private Socket?       _socket;
+    private Socket?        _socket;
     private NetworkStream? _stream;
     private StreamReader?  _reader;
 
@@ -47,9 +47,9 @@ public sealed class IpcClient : IAsyncDisposable
         }
     }
 
-    public async ValueTask DisposeAsync()
+    public void Dispose()
     {
-        if (_reader is not null) await _reader.DisposeAsync();
+        _reader?.Dispose();
         _stream?.Dispose();
         _socket?.Dispose();
     }
