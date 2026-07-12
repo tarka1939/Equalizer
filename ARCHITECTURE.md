@@ -124,6 +124,80 @@ is intentional-looking defensive code — but see §7.1, because this exact
 "unprepared instance quietly no-ops" behavior is what makes a real bug in
 the Windows APO invisible.
 
+### 2.3 `OverlapAdd` — FFT block convolution (FIR-filter prep, not yet wired in)
+
+**Status: infrastructure only.** `Biquad`/`Equalizer10Band` still do all
+production audio processing; nothing in `daemon/`, the APO, or the GUI calls
+`OverlapAdd` yet. It exists so a future FIR-filter feature (measured
+room-correction impulse responses, linear-phase crossovers, etc.) has
+somewhere to plug in without redesigning the convolution machinery from
+scratch — the Windows APO project already hinted at this (`Equalizer.h` has
+a long-standing commented-out `#include "kiss_fftr.h"  // if using real FFT`,
+and `kiss_fft.c`/`kiss_fftr.c` were already compiled into `Equalizer.vcxproj`
+but not into this cross-platform CMake build until now).
+
+`OverlapAdd` implements the classic block-based FFT convolution algorithm
+("Overlap-Add"), built on the vendored **KissFFT** (`Equalizer/kissfft-131.2.0/`,
+BSD-3-Clause; only `kiss_fft.c`/`kiss_fftr.c`, the real-FFT subset, are
+compiled — not `kiss_fftnd`/`kfc`, which nothing here needs):
+
+- Input arrives as a continuous stream and is grouped internally into fixed
+  analysis blocks of `blockSize` (B) frames.
+- Each block is zero-padded to `fftSize` (N), a size with only `{2,3,5}` as
+  prime factors and `N ≥ B + M − 1` (M = the largest impulse response
+  `SetImpulseResponse()` will ever be given), then transformed with
+  `kiss_fftr`.
+- The transformed block is multiplied bin-by-bin against the filter's
+  precomputed spectrum and inverse-transformed (`kiss_fftri`). Because
+  `N ≥ B + M − 1`, this per-block *circular* convolution equals the true
+  *linear* convolution of that block against the filter — no wraparound.
+- Consecutive blocks' "tails" (the `N − B` samples of each inverse-FFT result
+  that extend past the current block) are carried forward and added into the
+  next block's output — the "Add" in Overlap-Add — which is what reassembles
+  a continuous linear convolution out of independent per-block circular
+  convolutions.
+
+**Normalization.** KissFFT's `kiss_fftr`/`kiss_fftri` pair is *not*
+individually normalized — a forward+inverse round trip scales every sample
+by exactly N (confirmed empirically by compiling the vendored sources
+against a standalone round-trip check, not assumed from the docs). Rather
+than pay a per-sample division in the RT path, `SetImpulseResponse()`
+(non-RT) pre-scales the filter's spectrum by `1/N` once: if `X = kiss_fftr(block)`
+and `H = kiss_fftr(padded taps)`, using `H' = H/N` gives
+`kiss_fftri(X · H') == true linear-convolution output` directly, with zero
+extra arithmetic in `Process()`.
+
+**RT-safety** follows the same pattern as `Biquad` (§2.1): the filter's
+frequency-domain representation is double-buffered
+(`m_filterSpectrum[2]`) behind an `std::atomic<uint32_t>` index, written
+with `memory_order_release` by `SetImpulseResponse()` (non-RT) and read with
+`memory_order_acquire` once per completed block by the RT path. `Process()`
+itself never allocates — all buffers (per-channel block/spectrum/tail/ring
+storage) are sized once in `Prepare()`. KissFFT's own transform calls are
+allocation-free too for every realistic `fftSize` this class produces:
+tracing `kf_factor()`/`kf_work()` in `kiss_fft.c` shows that for any
+`{2,3,5}`-smooth size ≥ 2, every FFT stage dispatches on radix 2, 3, 4, or 5
+— never KissFFT's one internal path that can call `alloca()`/`malloc()` per
+transform (`kf_bfly_generic()`, used only for other radices). The sole
+exception is the degenerate `fftSize == 2` case (`blockSize == maxImpulseLength == 1`),
+which is irrelevant for any real audio block size. This is verified line by
+line against `kiss_fft.c`, and cross-checked by
+`OverlapAdd_FftSizeIsAlwaysTwoThreeFiveSmooth` in the test suite below —
+not just asserted in a comment.
+
+**Latency.** `GetLatencySamples()` returns exactly `blockSize − 1`: a block's
+convolution can't be computed until all `blockSize` of its input samples
+have arrived, so the first `blockSize − 1` output samples of the stream are
+silence. `Process(frames, ...)` accepts an arbitrary, non-block-aligned, and
+call-to-call-varying `frames` count — internal staging and a small output
+ring buffer (`4× blockSize` capacity; occupancy is bounded well below that,
+see the comment in `OverlapAdd::Process()`) absorb the difference between
+however the caller chops audio and the fixed analysis block size.
+
+`SetImpulseResponse()` applies the same FIR to every channel (no
+per-channel filter support yet — not needed until something actually wires
+this engine into a signal chain).
+
 ---
 
 ## 3. Windows APO (`Equalizer/`)
@@ -440,8 +514,9 @@ to be caught by the other.
 | GUI | .NET 8 SDK | `GUI/GUI.csproj` |
 | CurveGen | pip / setuptools | `CurveGen/pyproject.toml` |
 
-The CMake side now has an `EQUALIZER_BUILD_TESTS` option (default `ON`) that
-adds three test executables alongside the existing ones:
+The CMake side has an `EQUALIZER_BUILD_TESTS` option (default `ON`) that adds
+test executables (`dsp_tests`, `overlap_add_tests`, `eq_state_tests`,
+`ipc_server_tests`) alongside the existing ones:
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release
@@ -449,14 +524,25 @@ cmake --build build -j$(nproc)
 ctest --test-dir build --output-on-failure
 ```
 
-`dsp_tests` (DSP core) and `eq_state_tests` / `ipc_server_tests` (daemon
-protocol/state) build independently of whether `libpipewire-0.3-dev` is
-installed — they were deliberately kept free of the PipeWire dependency so
-they still build and run in minimal environments (including the one this
-document was written in, which had no `cmake` binary at all and no
-PipeWire dev package; every test in this document was verified with direct
-`g++ -std=c++17 -Wall -Wextra` invocations mirroring exactly what the CMake
-targets above declare, not assumed from reading the CMake files).
+`dsp_tests` / `overlap_add_tests` (DSP core) and `eq_state_tests` /
+`ipc_server_tests` (daemon protocol/state) build independently of whether
+`libpipewire-0.3-dev` is installed — they were deliberately kept free of the
+PipeWire dependency so they still build and run in minimal environments
+(including the one this document was written in, which had no `cmake`
+binary at all and no PipeWire dev package; every test in this document was
+verified with direct `g++ -std=c++17 -Wall -Wextra` invocations mirroring
+exactly what the CMake targets above declare, not assumed from reading the
+CMake files).
+
+The `dsp` static library now also compiles `Equalizer/kissfft-131.2.0`'s
+`kiss_fft.c`/`kiss_fftr.c` (vendored, BSD-3-Clause) — see §2.3. Fixed in the
+same pass: `WavEqTest` (`Tools/WavEqTest.cpp`) uses `BandEqualizer`
+(`Equalizer/BandEqualizer.{h,cpp}`), but that source file had never actually
+been added to the `WavEqTest` CMake target, so the tool could never link on
+a non-Windows build (`undefined reference to BandEqualizer::BandEqualizer()`)
+— a pre-existing gap, unrelated to the kissfft wiring, found while
+re-verifying the full build after adding it. `BandEqualizer.cpp` is now part
+of the `WavEqTest` target.
 
 ---
 
@@ -473,6 +559,7 @@ targets above declare, not assumed from reading the CMake files).
 | WAV/PSD/FFT measurement | `CurveGen/tests/test_measurement.py` | PCM normalization (int16/int32/uint8/float32/float64), peak-frequency accuracy for both Welch-PSD and FFT-IR paths, mono/stereo channel selection incl. modulo-wraparound, fractional-octave smoothing (DC-bin safety, spike smoothing, fraction sensitivity) |
 | Correction-curve math | `CurveGen/tests/test_flatten.py` | Flat-input/zero-correction, boost inversion, 1kHz self-cancellation (§6), clipping, auto-preamp sign, Harman blending, arbitrary band counts |
 | Preset serialization | `CurveGen/tests/test_export.py` | Round-trip, schema-mismatch errors, directory creation |
+| FFT block convolution | `DSP/tests/test_overlap_add.cpp` | Parameter validation, `fftSize` always `{2,3,5}`-smooth, latency == `blockSize − 1` exactly, matches direct time-domain convolution (single call and arbitrary non-block-aligned call sizes), multi-channel independence, `Reset()` clears carried tail, filter hot-swap affects only not-yet-computed blocks |
 
 Run everything:
 
@@ -507,6 +594,10 @@ cd CurveGen && pip install -e ".[dev]" && pytest tests/ -v
   check (`WavEqTest in.wav out.wav`) and is exercised that way in
   `LOCAL_TEST_GUIDE.md`-style manual testing, but it isn't part of the
   automated suite.
+- **`DSP/OverlapAdd.{h,cpp}`** — covered by `DSP/tests/test_overlap_add.cpp`
+  for correctness/RT-safety of the engine itself, but since nothing calls it
+  yet (§2.3), there's no test of it integrated into an actual signal chain —
+  that will be a real target once a FIR-filter feature actually wires it in.
 
 ---
 

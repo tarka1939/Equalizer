@@ -103,6 +103,7 @@ currently have no automated tests).
 Equalizer/
 ├── CMakeLists.txt          # Root build (DSP lib + daemon + WavEqTest)
 ├── DSP/                    # Platform-agnostic biquad / 10-band EQ (C++)
+│   └── OverlapAdd.{h,cpp}  # FFT block-convolution engine (FIR-filter prep, not yet wired in)
 ├── daemon/                 # Cross-platform audio daemon (C++)
 │   ├── main.cpp
 │   ├── eq_state.h          # Lock-free RT↔non-RT state
