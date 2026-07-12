@@ -11,6 +11,10 @@ A cross-platform system-level equalizer with three cooperating modules:
 The Windows **APO DLL** (`Equalizer/` → compiled to `Equalizer.dll`) provides the
 existing Windows Audio Engine hook. On Linux the daemon uses a **PipeWire filter node**.
 
+> New to this repo? [`ARCHITECTURE.md`](ARCHITECTURE.md) walks through how
+> the modules actually fit together (data flow, RT-safety model, IPC
+> protocol, known gaps) in more depth than this README.
+
 ---
 
 ## Build
@@ -72,6 +76,24 @@ The daemon exposes a JSON-line socket at `/tmp/eq-daemon.sock` (Linux) or
 ## Preset Format
 
 EQ presets are JSON files conforming to [`shared/preset_schema.json`](shared/preset_schema.json).
+
+---
+
+## Testing
+
+```bash
+# C++ (DSP core + daemon protocol/state — builds without PipeWire installed)
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+ctest --test-dir build --output-on-failure
+
+# Python (CurveGen)
+cd CurveGen && pip install -e ".[dev]" && pytest tests/ -v
+```
+
+See [`ARCHITECTURE.md`](ARCHITECTURE.md#9-testing-strategy-whats-covered-what-isnt)
+for exactly what's covered and what isn't (GUI and the Windows APO/WASAPI paths
+currently have no automated tests).
 
 ---
 

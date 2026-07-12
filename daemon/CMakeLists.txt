@@ -1,6 +1,30 @@
 cmake_minimum_required(VERSION 3.20)
 
 # ──────────────────────────────────────────────────────────────────────────────
+# IPC / state unit tests — deliberately independent of the platform backend
+# branch below. ipc_server.cpp and eq_state.h have zero audio-backend
+# dependencies (no PipeWire/WASAPI/CoreAudio), so these build and run even on
+# a machine that can't build eq-daemon itself (e.g. no libpipewire-0.3-dev).
+# ──────────────────────────────────────────────────────────────────────────────
+if(EQUALIZER_BUILD_TESTS)
+    find_package(Threads REQUIRED)
+
+    add_executable(eq_state_tests tests/test_eq_state.cpp eq_state.h)
+    target_include_directories(eq_state_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME eq_state_tests COMMAND eq_state_tests)
+
+    add_executable(ipc_server_tests
+        tests/test_ipc_server.cpp
+        ipc_server.cpp
+        ipc_server.h
+        eq_state.h
+    )
+    target_include_directories(ipc_server_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(ipc_server_tests PRIVATE Threads::Threads)
+    add_test(NAME ipc_server_tests COMMAND ipc_server_tests)
+endif()
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Sources common across all platforms
 # ──────────────────────────────────────────────────────────────────────────────
 set(DAEMON_SOURCES
