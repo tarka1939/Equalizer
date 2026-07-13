@@ -3,16 +3,19 @@ cli.py — Command-line interface for eq-curvegen.
 
 Commands
 --------
-  measure   Analyse a WAV file and generate a room-correction preset
-  plot      Display the frequency response and correction curve (requires matplotlib)
-  send      Send a preset to the running eq-daemon via IPC
+  measure     Analyse a WAV file and generate a room-correction preset
+  visualize   Build a 4-stage FFT+CPB validation report (see visualize.py)
+  plot        Display the frequency response and correction curve (requires matplotlib)
+  send        Send a preset to the running eq-daemon via IPC
 
 Examples
 --------
-  eq-curvegen measure --input room.wav --output preset.json
-  eq-curvegen measure --input ir.wav --ir --harman --output preset.json
-  eq-curvegen plot    --input room.wav
-  eq-curvegen send    --preset preset.json
+  eq-curvegen measure    --input room.wav --output preset.json
+  eq-curvegen measure    --input ir.wav --ir --harman --output preset.json
+  eq-curvegen visualize  --input room_before.wav --output report.png
+  eq-curvegen visualize  --input room_before.wav --recorded-output room_after.wav --output report.png
+  eq-curvegen plot       --input room.wav
+  eq-curvegen send       --preset preset.json
 """
 from __future__ import annotations
 
@@ -22,7 +25,7 @@ import socket
 import sys
 from pathlib import Path
 
-from curvegen import measurement, flatten, export
+from curvegen import measurement, flatten, export, visualize
 
 
 # ── Subcommand: measure ───────────────────────────────────────────────────────
@@ -59,6 +62,55 @@ def cmd_measure(args: argparse.Namespace) -> int:
     # Write preset
     name = args.name or Path(args.input).stem + "_correction"
     export.write_preset(args.output, name, gains_db, preamp_db)
+    return 0
+
+
+# ── Subcommand: visualize ─────────────────────────────────────────────────────
+
+def cmd_visualize(args: argparse.Namespace) -> int:
+    """
+    Build the 4-stage FFT+CPB validation report:
+      1. Recorded input   -- args.input, as measured
+      2. Curve generated   -- the continuous EQ response flatten.py computed
+      3. Expected output   -- stage 1 + stage 2, computed mathematically
+      4. Recorded output   -- args.recorded_output, if supplied (optional)
+    See curvegen/visualize.py for the full explanation of each stage and of
+    what "FFT" vs "CPB" mean here.
+    """
+    try:
+        import matplotlib  # noqa: F401 -- import check only; visualize.plot_report does the real import
+    except ImportError:
+        print("matplotlib is required for `visualize`. Install with: pip install matplotlib")
+        return 1
+
+    print(f"[curvegen] Recorded input:  {args.input}")
+    if args.recorded_output:
+        print(f"[curvegen] Recorded output: {args.recorded_output}")
+    else:
+        print("[curvegen] Recorded output: (none supplied -- that panel will be marked unavailable)")
+
+    report = visualize.build_report(
+        recorded_input_path=args.input,
+        recorded_output_path=args.recorded_output,
+        input_format=args.input_format,
+        output_format=args.output_format,
+        input_channel=args.channel,
+        output_channel=args.output_channel,
+        ir=args.ir,
+        harman=args.harman,
+        max_gain_db=args.max_gain,
+        q=args.q,
+        cpb_fraction=args.cpb_fraction,
+    )
+
+    print("\n Band (Hz)  Requested gain (dB)")
+    print(" ─────────  ───────────────────")
+    for hz, g in zip(report.band_hz, report.gains_db):
+        print(f"  {hz:>6.0f}    {g:+.2f}")
+    print(f"\n Preamp:    {report.preamp_db:+.2f} dB\n")
+
+    visualize.plot_report(report, args.output, cpb_fraction=args.cpb_fraction)
+    print(f"[curvegen] Report saved to {args.output}")
     return 0
 
 
@@ -157,6 +209,31 @@ def main() -> None:
     p_meas.add_argument("--no-preamp", action="store_true", help="Disable auto preamp headroom")
     p_meas.add_argument("--name",     default="", help="Preset name (default: input filename)")
 
+    # visualize
+    p_vis = sub.add_parser(
+        "visualize",
+        help="Build a 4-stage FFT+CPB validation report (recorded input / curve / expected / recorded output)",
+    )
+    p_vis.add_argument("--input",           required=True, help="Recorded input measurement (stage 1)")
+    p_vis.add_argument("--recorded-output", default=None,
+                        help="Recorded output measurement (stage 4), taken after applying the "
+                             "correction. Optional -- omit if you haven't re-measured yet.")
+    p_vis.add_argument("--output",          required=True, help="Output report image (e.g. report.png)")
+    p_vis.add_argument("--input-format",    default=None,
+                        help="Loader format for --input (default: auto-detect from extension, "
+                             "falling back to 'wav'). See curvegen/loaders.py.")
+    p_vis.add_argument("--output-format",   default=None,
+                        help="Loader format for --recorded-output (default: same auto-detection as --input-format)")
+    p_vis.add_argument("--ir",              action="store_true",
+                        help="Treat --input/--recorded-output as impulse responses rather than raw recordings")
+    p_vis.add_argument("--channel",         type=int, default=0, help="Channel to use for --input (default: 0)")
+    p_vis.add_argument("--output-channel",  type=int, default=0, help="Channel to use for --recorded-output (default: 0)")
+    p_vis.add_argument("--harman",          action="store_true", help="Blend toward Harman 2018 target")
+    p_vis.add_argument("--max-gain",        type=float, default=flatten.MAX_GAIN_DB, help="Max gain per band in dB")
+    p_vis.add_argument("--q",               type=float, default=1.0, help="Shared Q factor for every band (default: 1.0)")
+    p_vis.add_argument("--cpb-fraction",    type=float, default=visualize.CPB_FRACTION,
+                        help=f"Fractional-octave width for the CPB view (default: {visualize.CPB_FRACTION:.4f} = 1/3 octave)")
+
     # plot
     p_plot = sub.add_parser("plot", help="Plot frequency response and correction curve")
     p_plot.add_argument("--input",   required=True, help="Input WAV file")
@@ -170,9 +247,10 @@ def main() -> None:
     args = parser.parse_args()
 
     handlers = {
-        "measure": cmd_measure,
-        "plot":    cmd_plot,
-        "send":    cmd_send,
+        "measure":   cmd_measure,
+        "visualize": cmd_visualize,
+        "plot":      cmd_plot,
+        "send":      cmd_send,
     }
     sys.exit(handlers[args.command](args))
 
