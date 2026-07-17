@@ -95,7 +95,11 @@ exists as a separate path rather than an extension of `measure`.
 ## IPC Protocol
 
 The daemon exposes a JSON-line socket at `/tmp/eq-daemon.sock` (Linux) or
-`\\.\pipe\eq-daemon` (Windows, future).  See [`shared/ipc_protocol.md`](shared/ipc_protocol.md).
+`\\.\pipe\eq-daemon` (Windows, future). Commands include the 10-band
+`set_bands` gains and, for room correction, `set_fir`/`clear_fir` to load or
+drop a measured impulse response (run through `DSP::EqPipeline` FIR-then-IIR,
+see [`ARCHITECTURE.md` §2.4](ARCHITECTURE.md)). See
+[`shared/ipc_protocol.md`](shared/ipc_protocol.md) for the full reference.
 
 ## Preset Format
 
@@ -135,7 +139,10 @@ ctest --test-dir build --output-on-failure
 cd CurveGen && pip install -e ".[dev]" && pytest tests/ -v
 ```
 
-See [`ARCHITECTURE.md`](ARCHITECTURE.md#9-testing-strategy-whats-covered-what-isnt)
+`ctest` now also builds and runs `eq_pipeline_tests`, covering the combined
+FIR+IIR execution engine (`DSP::EqPipeline`, see
+[`ARCHITECTURE.md` §2.4](ARCHITECTURE.md)). See
+[`ARCHITECTURE.md`](ARCHITECTURE.md#9-testing-strategy-whats-covered-what-isnt)
 for exactly what's covered and what isn't (GUI and the Windows APO/WASAPI paths
 currently have no automated tests).
 
@@ -147,7 +154,8 @@ currently have no automated tests).
 Equalizer/
 ├── CMakeLists.txt          # Root build (DSP lib + daemon + WavEqTest)
 ├── DSP/                    # Platform-agnostic biquad / 10-band EQ (C++)
-│   └── OverlapAdd.{h,cpp}  # FFT block-convolution engine (FIR-filter prep, not yet wired in)
+│   ├── OverlapAdd.{h,cpp}  # FFT block-convolution engine (FIR filter)
+│   └── EqPipeline.{h,cpp}  # Combines FIR+IIR: IIR-only/FIR-only/FIR-then-IIR
 ├── daemon/                 # Cross-platform audio daemon (C++)
 │   ├── main.cpp
 │   ├── eq_state.h          # Lock-free RT↔non-RT state

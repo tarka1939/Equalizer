@@ -135,17 +135,16 @@ is intentional-looking defensive code — but see §7.1, because this exact
 "unprepared instance quietly no-ops" behavior is what makes a real bug in
 the Windows APO invisible.
 
-### 2.3 `OverlapAdd` — FFT block convolution (FIR-filter prep, not yet wired in)
+### 2.3 `OverlapAdd` — FFT block convolution (FIR engine)
 
-**Status: infrastructure only.** `Biquad`/`Equalizer10Band` still do all
-production audio processing; nothing in `daemon/`, the APO, or the GUI calls
-`OverlapAdd` yet. It exists so a future FIR-filter feature (measured
-room-correction impulse responses, linear-phase crossovers, etc.) has
-somewhere to plug in without redesigning the convolution machinery from
-scratch — the Windows APO project already hinted at this (`Equalizer.h` has
-a long-standing commented-out `#include "kiss_fftr.h"  // if using real FFT`,
-and `kiss_fft.c`/`kiss_fftr.c` were already compiled into `Equalizer.vcxproj`
-but not into this cross-platform CMake build until now).
+**Status: wired in, on the Linux daemon and `WavEqTest` only.** `OverlapAdd`
+is no longer standalone infrastructure — it's the FIR stage of
+`DSP::EqPipeline` (§2.4), which combines it with `Equalizer10Band` behind a
+single `Process()` call. `pipewire_backend.cpp` and `Tools/WavEqTest.cpp`
+both use `EqPipeline` rather than talking to `OverlapAdd` directly. It is
+still **not** wired into the Windows APO (`Equalizer/`, §3) or the
+WASAPI/CoreAudio backends (§4.3) — those still only ever exercise the IIR
+path, if they exercise anything at all (§7.1).
 
 `OverlapAdd` implements the classic block-based FFT convolution algorithm
 ("Overlap-Add"), built on the vendored **KissFFT** (`Equalizer/kissfft-131.2.0/`,
@@ -209,6 +208,79 @@ however the caller chops audio and the fixed analysis block size.
 per-channel filter support yet — not needed until something actually wires
 this engine into a signal chain).
 
+### 2.4 `EqPipeline` — combining FIR and IIR
+
+`DSP/EqPipeline.{h,cpp}` is the execution engine that decides *whether* and
+*in what order* the FIR (`OverlapAdd`) and IIR (`Equalizer10Band`) stages
+run, so callers (`pipewire_backend.cpp`, `Tools/WavEqTest.cpp`) don't have
+to duplicate that logic. The rule, matched exactly by
+`DSP/tests/test_eq_pipeline.cpp`:
+
+| FIR configured? | IIR configured? | What runs |
+|---|---|---|
+| no | no | passthrough (copy-through, or true no-op if `output == input`) |
+| no | yes | IIR only |
+| yes | no | FIR only |
+| yes | yes | FIR **then** IIR (FIR's output feeds IIR's input) |
+
+FIR-before-IIR mirrors how a measured room-correction impulse response
+(from CurveGen) is conventionally placed upstream of a "to taste" graphic
+EQ — correct the room first, then shape the corrected result, rather than
+shaping first and having the room correction re-color that shaping.
+
+**"Configured" is tracked independently per stage**, not inferred from the
+underlying engines' own state:
+
+- **IIR is "active" iff any of the last `SetBandsPeaking()` call's 10 band
+  gains was non-zero** (`m_iirActive`, an `std::atomic<bool>` set inside
+  `SetBandsPeaking()`). All-zero gains are treated as "not configured," same
+  as `Equalizer10Band`'s own all-zero-gain passthrough behavior (§9's
+  covered table).
+- **FIR is "active" iff `SetImpulseResponse()` was called more recently than
+  the last `Prepare()`/`ClearImpulseResponse()`** (`m_firActive`). This has
+  to be tracked explicitly rather than asked of `OverlapAdd`, because
+  `OverlapAdd::Prepare()` always installs an identity impulse response
+  internally as part of (re)sizing its FFT buffers (§2.3) — there is no
+  "unconfigured" state `OverlapAdd` itself can report after a `Prepare()`
+  call, identity and "no FIR" are indistinguishable from inside `OverlapAdd`.
+
+**`EqPipeline::Prepare()` resets FIR but preserves IIR.** This asymmetry is
+intentional, not an oversight, and follows directly from what each
+underlying engine's own `Prepare()` does:
+
+- `OverlapAdd::Prepare()` reinstalls an identity response every time (see
+  above) — so `EqPipeline` has no choice but to mark FIR inactive again
+  after every `Prepare()`; claiming otherwise would silently degrade FIR to
+  identity while still reporting it as "active."
+- `Equalizer10Band::Prepare()` → `Biquad::Prepare()` only resizes/clears
+  per-channel filter *history* (`m_states`) — it never touches configured
+  coefficients (`m_coeffs`), which live in `Biquad`'s own separate
+  double-buffer written only by `SetPeaking()`. So a previously-configured
+  EQ curve already survived a bare `Equalizer10Band::Prepare()` call before
+  `EqPipeline` existed (e.g. `pipewire_backend.cpp`'s `OnParamChanged()`
+  re-`Prepare()`s on every sample-rate/channel-count change); resetting
+  `m_iirActive` on `Prepare()` would be a regression, silently dropping a
+  live curve back to passthrough on every format change.
+
+This is pinned down by `EqPipeline_RePrepareResetsFirButPreservesIir` in the
+test suite, which also documents a related subtlety: after a re-`Prepare()`
+at a *different* sample rate, the IIR stage keeps using whatever biquad
+coefficients were last computed at the *old* rate — `EqPipeline` does not
+(and cannot, without a cached copy of the last `SetBandsPeaking()` args)
+recompute them, since nothing calls `SetBandsPeaking()` again on its behalf.
+
+**Latency** (`GetLatencySamples()`) is `OverlapAdd::GetLatencySamples()`
+(`blockSize − 1`) when FIR is active, `0` otherwise — the IIR stage is a
+sample-for-sample cascade of biquads with no inherent block delay.
+
+**Scope**: wired into `pipewire_backend.cpp` (Linux daemon) and
+`Tools/WavEqTest.cpp` only — see §4.3 and §9 for what is and isn't verified
+for each host.
+
+---
+
+## 3. Windows APO (`Equalizer/`)
+
 ---
 
 ## 3. Windows APO (`Equalizer/`)
@@ -258,6 +330,20 @@ struct EqState {
     void SetGains(gains)                 { pending_gains = gains; pending_dirty.store(true, release); }
     bool ConsumePending(std::array&out)  { if (!dirty.load(acquire)) return false;
                                             dirty.store(false, release); out = pending_gains; return true; }
+
+    // FIR handoff (mirrors the gains handoff above exactly), added for
+    // DSP::EqPipeline (§2.4): a fixed-capacity array, not std::vector, so a
+    // concurrent non-RT SetImpulseResponse() call can never race the RT
+    // reader against a reallocation.
+    static constexpr uint32_t kMaxFirTaps = 4096;
+    std::array<float, kMaxFirTaps> pending_ir;
+    uint32_t               pending_ir_length;   // 0 == "no FIR configured"
+    std::atomic<bool>      pending_ir_dirty;
+    uint32_t               current_fir_length;  // for get_state reads only
+
+    void SetImpulseResponse(taps, length);  // clamps length to kMaxFirTaps
+    void ClearImpulseResponse();            // SetImpulseResponse(nullptr, 0)
+    bool ConsumePendingIr(std::array&out, uint32_t&outLength);
 };
 ```
 
@@ -287,12 +373,18 @@ Implementation notes not obvious from the protocol doc:
   implemented" and returns `false` on `_WIN32` — there is no Windows
   implementation of the server side of this protocol yet.
 - **JSON parsing is hand-rolled**, not a library: `ipc_server.cpp` has its own
-  `JsonGetString`/`JsonGetFloat`/`JsonGetBool`/`JsonGetGains` that do
-  substring search rather than real parsing. This is fine for the fixed,
-  small command set it currently handles, but it is not a general JSON
-  parser — malformed-but-plausible-looking input can confuse it in ways a
-  real parser wouldn't (e.g. it has no concept of nested objects or string
-  escaping).
+  `JsonGetString`/`JsonGetFloat`/`JsonGetBool`/`JsonGetGains`/
+  `JsonGetFloatArray` that do substring search rather than real parsing.
+  This is fine for the fixed, small command set it currently handles, but
+  it is not a general JSON parser — malformed-but-plausible-looking input
+  can confuse it in ways a real parser wouldn't (e.g. it has no concept of
+  nested objects or string escaping).
+- **`set_fir`/`clear_fir`** configure the FIR stage of `DSP::EqPipeline`
+  (§2.4) via the `EqState` FIR handoff (§4.1): `set_fir` rejects empty or
+  over-`kMaxFirTaps` arrays with an error response rather than silently
+  clamping/dropping taps; `clear_fir` falls back to IIR-only (or
+  passthrough). `get_state` reports the active tap count as `fir_length`.
+  Full wire format: [`shared/ipc_protocol.md`](shared/ipc_protocol.md).
 - **Threading**: `AcceptLoop()` runs on its own thread, polling the listening
   socket every 200ms (so `Stop()` can unblock it); each accepted client is
   handled on its own **detached** thread (`HandleClient`), which loops
@@ -319,10 +411,16 @@ compile time via `BACKEND_PIPEWIRE` / `BACKEND_WASAPI` / `BACKEND_COREAUDIO`
 
 - **PipeWire (Linux) — implemented.** `pipewire_backend.cpp` registers a
   PipeWire *filter* node with 2 input + 2 output ports, interleaves the
-  planar buffers PipeWire hands it, runs them through an
-  `Equalizer10Band`, applies preamp + `[-1,1]` clamp, and de-interleaves back
-  out. Gains are pulled from `EqState::ConsumePending()` once per RT
-  callback (`OnProcess`).
+  planar buffers PipeWire hands it, runs them through a `DSP::EqPipeline`
+  (§2.4, FIR-then-IIR or whichever of the two is configured), applies
+  preamp + `[-1,1]` clamp, and de-interleaves back out. Gains are pulled
+  from `EqState::ConsumePending()` and FIR taps from
+  `EqState::ConsumePendingIr()`, both once per RT callback (`OnProcess`).
+  **Caveat**: this wiring could not be compiled in the environment it was
+  written in (no `libpipewire-0.3-dev` available, same limitation as the
+  rest of this backend, §9) — verified by manual inspection and symbol
+  cross-checks against the real `EqPipeline`/`EqState` APIs, not by a
+  successful build.
 - **WASAPI (Windows) — declared but not implemented.** `wasapi_backend.h`
   exists as a header; there is no corresponding `.cpp`, and
   `daemon/CMakeLists.txt`'s Windows branch references
@@ -683,8 +781,8 @@ of the `WavEqTest` target.
 |---|---|---|
 | Biquad math | `DSP/tests/test_biquad.cpp` | Unity/0dB-passthrough identity, RBJ gain accuracy at center frequency (±0.1–0.15 linear tolerance), multi-channel state isolation, `Reset()` clearing feedback state |
 | 10-band cascade | `DSP/tests/test_biquad.cpp` | Unprepared-instance passthrough (§7.1's root cause), all-zero-gain passthrough, single-band boost, in-place vs. out-of-place equivalence |
-| RT/non-RT gain handoff | `daemon/tests/test_eq_state.cpp` | Default state, dirty-flag semantics, single-consume behavior, `pending_gains`/`current_gains` non-synchronization (§4.1) |
-| IPC protocol | `daemon/tests/test_ipc_server.cpp` | `set_bands` (valid + wrong-length), `set_preamp`, `set_enabled`, `get_state`, `load_preset` (documents stub), unknown command, empty line — all over a real Unix socket |
+| RT/non-RT gain + FIR handoff | `daemon/tests/test_eq_state.cpp` | Default state, dirty-flag semantics, single-consume behavior, `pending_gains`/`current_gains` non-synchronization (§4.1), FIR tap set/clear/consume, oversized-tap clamping |
+| IPC protocol | `daemon/tests/test_ipc_server.cpp` | `set_bands` (valid + wrong-length), `set_preamp`, `set_enabled`, `set_fir`/`clear_fir` (valid, empty, oversized, malformed), `get_state` (incl. `fir_length`), `load_preset` (documents stub), unknown command, empty line — all over a real Unix socket |
 | WAV/PSD/FFT measurement | `CurveGen/tests/test_measurement.py` | PCM normalization (int16/int32/uint8/float32/float64), peak-frequency accuracy for both Welch-PSD and FFT-IR paths, mono/stereo channel selection incl. modulo-wraparound, fractional-octave smoothing (DC-bin safety, spike smoothing, fraction sensitivity) |
 | Correction-curve math | `CurveGen/tests/test_flatten.py` | Flat-input/zero-correction, boost inversion, 1kHz self-cancellation (§6), clipping, auto-preamp sign, Harman blending, arbitrary band counts |
 | Preset serialization | `CurveGen/tests/test_export.py` | Round-trip, schema-mismatch errors, directory creation |
@@ -692,6 +790,7 @@ of the `WavEqTest` target.
 | Visualization report (biquad eval + 4-stage build + render) | `CurveGen/tests/test_visualize.py`, `CurveGen/tests/test_cli_visualize.py` | 0dB-gain exact passthrough, single-band response equals its own gain at its own center frequency (independent of Q), cascaded-band dB additivity, `synthetic_freq_grid` bounds/monotonicity, `build_report` with/without stage 4, expected-output arithmetic vs. a manual recomputation, PNG actually rendered (with and without stage 4) via matplotlib's `Agg` backend, CLI end-to-end against synthetic WAVs |
 | FFT block convolution | `DSP/tests/test_overlap_add.cpp` | Parameter validation, `fftSize` always `{2,3,5}`-smooth, latency == `blockSize − 1` exactly, matches direct time-domain convolution (single call and arbitrary non-block-aligned call sizes), multi-channel independence, `Reset()` clears carried tail, filter hot-swap affects only not-yet-computed blocks |
 | Equalizer APO config export | `CurveGen/tests/test_eqapo_export.py`, `CurveGen/tests/test_cli_eqapo.py` | Preamp/filter line format round-trips through a regex parser, `PK` filter type used, 1-indexed sequential filter numbers, default vs. custom band list, scalar vs. per-band Q, parameter validation, `eqapo` CLI subcommand end-to-end against a synthetic WAV, and that `eqapo` and `measure` agree on the underlying gains/preamp (shared `_analyse()` pipeline) |
+| Combined FIR+IIR pipeline | `DSP/tests/test_eq_pipeline.cpp` | IIR-only/FIR-only/both/neither routing matches the priority table (§2.4) byte-for-byte against standalone `Equalizer10Band`/`OverlapAdd` reference instances, unprepared-instance passthrough, all-zero-gain leaves IIR inactive, oversized-tap rejection, `Reset()` preserves active flags, `Prepare()` resets FIR but preserves IIR (incl. the stale-coefficients-after-rate-change subtlety) |
 
 Run everything:
 
@@ -712,9 +811,10 @@ cd CurveGen && pip install -e ".[dev]" && pytest tests/ -v
   and a Windows toolchain; nothing in this repo exercises `APOProcess()` or
   `LockForProcess()` directly. §7.1 was found by code reading, not by a test
   that runs the APO.
-- **`pipewire_backend.cpp`** — requires a running PipeWire graph (or at least
-  `libpipewire-0.3-dev` to compile); untested here for the same reason the
-  daemon couldn't be built end-to-end in this environment.
+- **`pipewire_backend.cpp`**, including its `EqPipeline` wiring (§4.3) —
+  requires a running PipeWire graph (or at least `libpipewire-0.3-dev` to
+  compile); untested here for the same reason the daemon couldn't be built
+  end-to-end in this environment. Verified only by manual inspection.
 - **`wasapi_backend.h` / `coreaudio_backend.h`** — no corresponding `.cpp`
   exists to test (§7.3).
 - **The GUI** (`GUI/`) — no .NET SDK was available in the environment this
@@ -731,13 +831,21 @@ cd CurveGen && pip install -e ".[dev]" && pytest tests/ -v
   end-to-end hardware test.
 - **`Tools/WavEqTest.cpp`** — this is a manual inspection CLI, not something
   with pass/fail assertions; it's still useful as a quick end-to-end sanity
-  check (`WavEqTest in.wav out.wav`) and is exercised that way in
+  check (`WavEqTest in.wav out.wav [ir.wav]`, the optional 4th argument
+  exercises the FIR stage via `EqPipeline`) and is exercised that way in
   `LOCAL_TEST_GUIDE.md`-style manual testing, but it isn't part of the
-  automated suite.
-- **`DSP/OverlapAdd.{h,cpp}`** — covered by `DSP/tests/test_overlap_add.cpp`
-  for correctness/RT-safety of the engine itself, but since nothing calls it
-  yet (§2.3), there's no test of it integrated into an actual signal chain —
-  that will be a real target once a FIR-filter feature actually wires it in.
+  automated suite. Its FIR+IIR output was, however, independently
+  cross-checked outside this repo's own test/toolchain — against from-scratch
+  NumPy/SciPy reference implementations (linear convolution, and a
+  standalone RBJ-biquad time-domain recursion) run over the real compiled
+  binary's WAV output, max error ~1e-4, consistent with float32 precision.
+- **`DSP/OverlapAdd.{h,cpp}` integrated into a live signal chain** — covered
+  by `DSP/tests/test_overlap_add.cpp` for correctness/RT-safety of the
+  engine itself, and by `DSP/tests/test_eq_pipeline.cpp` for its combination
+  with `Equalizer10Band` inside `EqPipeline` (§2.4). Still not covered:
+  `EqPipeline` running inside the actual PipeWire RT callback (see the
+  `pipewire_backend.cpp` bullet above), and it is not wired into the
+  Windows APO or WASAPI/CoreAudio backends at all (§2.3, §4.3).
 - **Equalizer APO itself** — `eq-curvegen eqapo`'s output has been checked
   against the format Equalizer APO documents and against a hand-rolled test
   parser, but it has not been run through an actual Equalizer APO

@@ -13,6 +13,7 @@
 #include "../eq_state.h"
 
 #include <cstdio>
+#include <vector>
 
 namespace {
 
@@ -103,6 +104,89 @@ void EqState_SecondSetGainsOverwritesFirstBeforeConsume() {
         CHECK(out[i] == 7.0f);  // only the latest write survives
 }
 
+// ── FIR impulse response state ──────────────────────────────────────────
+
+void EqState_FirDefaultsAreSane() {
+    eq::EqState state;
+    CHECK(state.pending_ir_length == 0u);
+    CHECK(state.pending_ir_dirty.load() == false);
+    CHECK(state.current_fir_length == 0u);
+    for (uint32_t i = 0; i < eq::EqState::kMaxFirTaps; ++i)
+        CHECK(state.pending_ir[i] == 0.0f);
+}
+
+void EqState_SetImpulseResponseMarksDirtyAndStoresPending() {
+    eq::EqState state;
+    std::array<float, 4> taps{ 0.5f, 0.25f, -0.1f, 0.05f };
+
+    state.SetImpulseResponse(taps.data(), static_cast<uint32_t>(taps.size()));
+
+    CHECK(state.pending_ir_dirty.load() == true);
+    CHECK(state.pending_ir_length == 4u);
+    for (size_t i = 0; i < taps.size(); ++i)
+        CHECK(state.pending_ir[i] == taps[i]);
+
+    // SetImpulseResponse must NOT touch current_fir_length -- same seam
+    // as SetGains()/current_gains (the IPC layer updates it separately).
+    CHECK(state.current_fir_length == 0u);
+}
+
+void EqState_ConsumePendingIrReturnsTrueOnceThenFalse() {
+    eq::EqState state;
+    std::array<float, 2> taps{ 0.9f, -0.3f };
+    state.SetImpulseResponse(taps.data(), static_cast<uint32_t>(taps.size()));
+
+    std::array<float, eq::EqState::kMaxFirTaps> out{};
+    uint32_t outLength = 0;
+    bool first = state.ConsumePendingIr(out, outLength);
+    CHECK(first == true);
+    CHECK(outLength == 2u);
+    CHECK(out[0] == 0.9f);
+    CHECK(out[1] == -0.3f);
+    CHECK(state.pending_ir_dirty.load() == false);
+
+    std::array<float, eq::EqState::kMaxFirTaps> out2{};
+    out2.fill(-99.0f);
+    uint32_t outLength2 = 12345;
+    bool second = state.ConsumePendingIr(out2, outLength2);
+    CHECK(second == false);
+    // Nothing new published -- out/outLength must be left untouched.
+    CHECK(outLength2 == 12345u);
+    CHECK(out2[0] == -99.0f);
+}
+
+void EqState_ClearImpulseResponsePublishesZeroLength() {
+    eq::EqState state;
+    std::array<float, 3> taps{ 1.0f, 2.0f, 3.0f };
+    state.SetImpulseResponse(taps.data(), static_cast<uint32_t>(taps.size()));
+
+    std::array<float, eq::EqState::kMaxFirTaps> drained{};
+    uint32_t drainedLength = 0;
+    CHECK(state.ConsumePendingIr(drained, drainedLength) == true);
+    CHECK(drainedLength == 3u);
+
+    state.ClearImpulseResponse();
+    CHECK(state.pending_ir_dirty.load() == true);
+    CHECK(state.pending_ir_length == 0u);
+
+    std::array<float, eq::EqState::kMaxFirTaps> out{};
+    uint32_t outLength = 999;
+    CHECK(state.ConsumePendingIr(out, outLength) == true);
+    CHECK(outLength == 0u);  // 0 == "clear FIR", per ConsumePendingIr's contract
+}
+
+void EqState_SetImpulseResponseTruncatesOversizedInput() {
+    eq::EqState state;
+    std::vector<float> tooLong(eq::EqState::kMaxFirTaps + 10, 0.42f);
+
+    state.SetImpulseResponse(tooLong.data(), static_cast<uint32_t>(tooLong.size()));
+
+    // Defense-in-depth clamp (see eq_state.h's comment) -- the IPC layer
+    // is expected to reject this before it gets here, but EqState itself
+    // must not overrun pending_ir's fixed capacity either way.
+    CHECK(state.pending_ir_length == eq::EqState::kMaxFirTaps);
+}
+
 }  // namespace
 
 int main() {
@@ -110,6 +194,11 @@ int main() {
     RUN_TEST(EqState_SetGainsMarksDirtyAndStoresPending);
     RUN_TEST(EqState_ConsumePendingReturnsTrueOnceThenFalse);
     RUN_TEST(EqState_SecondSetGainsOverwritesFirstBeforeConsume);
+    RUN_TEST(EqState_FirDefaultsAreSane);
+    RUN_TEST(EqState_SetImpulseResponseMarksDirtyAndStoresPending);
+    RUN_TEST(EqState_ConsumePendingIrReturnsTrueOnceThenFalse);
+    RUN_TEST(EqState_ClearImpulseResponsePublishesZeroLength);
+    RUN_TEST(EqState_SetImpulseResponseTruncatesOversizedInput);
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

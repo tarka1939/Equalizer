@@ -34,6 +34,25 @@ Enable or bypass the equalizer.
 { "cmd": "set_enabled", "enabled": true }
 ```
 
+### `set_fir`
+Set the FIR (room-correction) impulse response taps. Applied via the same
+non-RT → RT handoff as `set_bands` (pending buffer + atomic dirty flag,
+consumed on the next audio callback). `taps` must be non-empty and no
+longer than 4096 samples (`EqState::kMaxFirTaps`); oversized or empty
+arrays are rejected with an error. Once set, the FIR stage becomes active:
+see `DSP::EqPipeline` in `ARCHITECTURE.md` §2.4 for the FIR/IIR execution
+order (FIR runs first, then IIR, when both are configured).
+```json
+{ "cmd": "set_fir", "taps": [0.5, 0.3, -0.1] }
+```
+
+### `clear_fir`
+Disable the FIR stage and fall back to IIR-only (or passthrough, if no
+bands are configured either).
+```json
+{ "cmd": "clear_fir" }
+```
+
 ### `get_state`
 Query full current state.
 ```json
@@ -51,9 +70,12 @@ Query full current state.
   "preamp_db": -3.0,
   "enabled": true,
   "sample_rate": 48000,
-  "channels": 2
+  "channels": 2,
+  "fir_length": 0
 }
 ```
+`fir_length` is the number of taps currently applied by `set_fir` (`0` if
+no FIR is configured, i.e. `clear_fir` was called or it was never set).
 
 ### Acknowledgement (to mutating commands)
 ```json

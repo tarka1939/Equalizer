@@ -1,4 +1,4 @@
-#include "../DSP/Equalizer10Band.h"
+#include "../DSP/EqPipeline.h"
 #include "../Equalizer/BandEqualizer.h"
 
 #include <array>
@@ -201,12 +201,18 @@ int main(int argc, char** argv)
 {
     if (argc < 3)
     {
-        std::fprintf(stderr, "Usage: WavEqTest <in.wav float32> <out.wav> [gain=0.8] [eqStrength=1.0]\n");
+        std::fprintf(stderr,
+            "Usage: WavEqTest <in.wav float32> <out.wav> [gain=0.8] [eqStrength=1.0] [ir.wav]\n"
+            "  ir.wav (optional): 32-bit float impulse response WAV -- installs it as the\n"
+            "  FIR stage (channel 0 only, applied to every output channel). With eqStrength=0\n"
+            "  and an ir.wav given, this exercises FIR-only mode; with ir.wav omitted, this\n"
+            "  exercises the original IIR-only demo; with both, FIR-then-IIR cascades.\n");
         return 2;
     }
 
     const float gain = (argc >= 4) ? static_cast<float>(std::atof(argv[3])) : 0.8f;
     const float eqStrength = (argc >= 5) ? static_cast<float>(std::atof(argv[4])) : 1.0f;
+    const char* irPath = (argc >= 6) ? argv[5] : nullptr;
 
     FmtChunk fmt{};
     std::vector<float> in;
@@ -219,10 +225,47 @@ int main(int argc, char** argv)
     const uint32_t channels = fmt.numChannels;
     const uint32_t frames = channels ? static_cast<uint32_t>(in.size() / channels) : 0;
 
-    DSP::Equalizer10Band eq;
-    eq.Prepare(static_cast<float>(fmt.sampleRate), channels);
+    // Optional FIR impulse response, loaded as a plain float32 WAV. Only
+    // channel 0 is used as the tap sequence -- OverlapAdd applies one FIR
+    // uniformly to every output channel (see DSP/OverlapAdd.h), it does not
+    // support a per-channel filter.
+    std::vector<float> irTaps;
+    if (irPath)
+    {
+        FmtChunk irFmt{};
+        std::vector<float> irRaw;
+        if (!ReadWavFloat32(irPath, irFmt, irRaw))
+        {
+            std::fprintf(stderr, "Failed to read impulse-response WAV (must be 32-bit float PCM).\n");
+            return 1;
+        }
+        const uint32_t irChannels = irFmt.numChannels ? irFmt.numChannels : 1;
+        const uint32_t irFrames = irChannels ? static_cast<uint32_t>(irRaw.size() / irChannels) : 0;
+        irTaps.resize(irFrames);
+        for (uint32_t i = 0; i < irFrames; ++i)
+            irTaps[i] = irRaw[i * irChannels];
+        std::fprintf(stderr, "Loaded impulse response: %u taps from %s\n", irFrames, irPath);
+    }
 
-    // Use an exaggerated curve by default for audibility.
+    DSP::EqPipeline eq;
+    constexpr uint32_t kFirBlockSize = 256;
+    const uint32_t firMaxImpulse = irTaps.empty() ? 1u : static_cast<uint32_t>(irTaps.size());
+    if (!eq.Prepare(static_cast<float>(fmt.sampleRate), channels, kFirBlockSize, firMaxImpulse))
+    {
+        std::fprintf(stderr, "Failed to prepare EqPipeline (channels=%u).\n", channels);
+        return 1;
+    }
+
+    if (!irTaps.empty())
+    {
+        if (!eq.SetImpulseResponse(irTaps.data(), static_cast<uint32_t>(irTaps.size())))
+            std::fprintf(stderr, "WARNING: failed to install impulse response (%zu taps).\n", irTaps.size());
+    }
+
+    // Use an exaggerated curve by default for audibility. eqStrength=0
+    // makes every band gain exactly 0, which leaves EqPipeline's IIR stage
+    // inactive (see EqPipeline::SetBandsPeaking) -- combined with an ir.wav,
+    // that is how to exercise FIR-only mode from this tool.
     BandEqualizer bands;
     std::array<float, BandEqualizer::BandCount> centers{};
     std::array<float, BandEqualizer::BandCount> gains{};
@@ -235,6 +278,11 @@ int main(int argc, char** argv)
 
     eq.SetBandsPeaking(centers, gains, 0.7f);
     eq.Reset();
+
+    std::fprintf(stderr, "Pipeline: FIR %s, IIR %s (latency %u samples)\n",
+        eq.IsFirActive() ? "active" : "inactive",
+        eq.IsIirActive() ? "active" : "inactive",
+        eq.GetLatencySamples());
 
     std::vector<float> out(in.size());
 
