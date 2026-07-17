@@ -51,6 +51,15 @@ each links `DSP/` directly and does its own thing. The GUI and CurveGen's
 Windows, there is currently no bridge between the GUI/CurveGen and the APO
 DLL — see [§7 Known issues](#7-known-issues-and-discrepancies).
 
+For a step-by-step view of what actually executes, in order, see the two
+diagrams in [`docs/diagrams/`](docs/diagrams/):
+[`dsp_execution_pipeline.svg`](docs/diagrams/dsp_execution_pipeline.svg)
+(the RT audio path plus the Windows APO/WavEqTest/OverlapAdd side paths, §2
+and §7.1) and
+[`curvegen_data_flow_pipeline.svg`](docs/diagrams/curvegen_data_flow_pipeline.svg)
+(measurement → correction → preset, §6, including the two feature-branch
+extensions that aren't merged into `main` yet).
+
 ---
 
 ## 2. DSP core (`DSP/`)
