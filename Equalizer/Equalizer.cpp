@@ -1,4 +1,5 @@
 ﻿#include "Equalizer.h"
+#include "ApoDsp.h"
 #include "BandEqualizer.h"
 #include "Diagnostics.h"
 #include "../DSP/Equalizer10Band.h"
@@ -63,24 +64,19 @@ void Equalizer::APOProcess(
     }
 
     const UINT32 channels = (m_channels != 0) ? m_channels : 2;
-    const UINT32 samples = frameCount * channels;
 
-    // Basic gain (preamp). EQ chain (if prepared) is applied after.
-    for (UINT32 i = 0; i < samples; ++i)
-        out[i] = in[i] * m_gain;
-
-    // Run through EQ chain (in-place).
+    // NOTE: this s_eq is a distinct static local from the one in
+    // LockForProcess() below -- they do NOT share storage. The band gains
+    // configured in LockForProcess are never applied here; this instance is
+    // always in its default (unprepared/flat) state. That predates this
+    // refactor -- see ApoDsp::ProcessBlock's unit tests (Equalizer/tests/)
+    // for the isolated, correctly-wired behavior, and the project's tests
+    // README for details. Not fixed here since only extraction for
+    // testability was in scope, not behavior changes.
     static DSP::Equalizer10Band s_eq;
-    s_eq.Process(out, out, frameCount, channels);
+    const UINT32 written = ApoDsp::ProcessBlock(in, out, frameCount, channels, m_gain, s_eq);
 
-    // Safety clamp to avoid runaway clipping for boosted EQ settings.
-    for (UINT32 i = 0; i < samples; ++i)
-    {
-        if (out[i] > 1.0f) out[i] = 1.0f;
-        else if (out[i] < -1.0f) out[i] = -1.0f;
-    }
-
-    outConn->u32ValidFrameCount = frameCount;
+    outConn->u32ValidFrameCount = written;
 }
 
 HRESULT Equalizer::IsInputFormatSupported(IAudioMediaType* pOppositeFormat, IAudioMediaType* pRequestedInputFormat,

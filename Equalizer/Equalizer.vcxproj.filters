@@ -39,6 +39,12 @@
     <ClCompile Include="ComExports.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="ApoDsp.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="RegistryUtil.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="Equalizer.def">
@@ -65,6 +71,12 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="Diagnostics.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ApoDsp.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="RegistryUtil.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

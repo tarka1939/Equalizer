@@ -95,11 +95,7 @@ exists as a separate path rather than an extension of `measure`.
 ## IPC Protocol
 
 The daemon exposes a JSON-line socket at `/tmp/eq-daemon.sock` (Linux) or
-`\\.\pipe\eq-daemon` (Windows, future). Commands include the 10-band
-`set_bands` gains and, for room correction, `set_fir`/`clear_fir` to load or
-drop a measured impulse response (run through `DSP::EqPipeline` FIR-then-IIR,
-see [`ARCHITECTURE.md` §2.4](ARCHITECTURE.md)). See
-[`shared/ipc_protocol.md`](shared/ipc_protocol.md) for the full reference.
+`\\.\pipe\eq-daemon` (Windows, future).  See [`shared/ipc_protocol.md`](shared/ipc_protocol.md).
 
 ## Preset Format
 
@@ -130,21 +126,26 @@ see `ARCHITECTURE.md` §6.1-6.2 for the full explanation.
 ## Testing
 
 ```bash
-# C++ (DSP core + daemon protocol/state — builds without PipeWire installed)
+# C++ (DSP core, daemon protocol/state, and the Windows-independent parts of
+# the APO project — all build without PipeWire or a Windows toolchain installed)
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)
 ctest --test-dir build --output-on-failure
 
 # Python (CurveGen)
 cd CurveGen && pip install -e ".[dev]" && pytest tests/ -v
+
+# Windows-only: COM/registry behavior for the APO DLL (build in Visual Studio)
+# Equalizer/tests/EqualizerRegistryUtilTests.vcxproj
+# Equalizer/tests/EqualizerComExportsTests.vcxproj
 ```
 
-`ctest` now also builds and runs `eq_pipeline_tests`, covering the combined
-FIR+IIR execution engine (`DSP::EqPipeline`, see
-[`ARCHITECTURE.md` §2.4](ARCHITECTURE.md)). See
-[`ARCHITECTURE.md`](ARCHITECTURE.md#9-testing-strategy-whats-covered-what-isnt)
-for exactly what's covered and what isn't (GUI and the Windows APO/WASAPI paths
-currently have no automated tests).
+See [`ARCHITECTURE.md`](ARCHITECTURE.md#9-testing-strategy-whats-covered-what-isnt)
+for exactly what's covered and what isn't. The GUI still has no automated
+tests, and the Windows APO/WASAPI paths are now partially covered (the
+gain/EQ/clamp math, the WASAPI stub, and COM/registry behavior each have
+tests) but `LockForProcess()`, `DllRegisterServer`/`DllUnregisterServer`, and
+the real PipeWire/CoreAudio backends are still untested.
 
 ---
 
@@ -154,8 +155,7 @@ currently have no automated tests).
 Equalizer/
 ├── CMakeLists.txt          # Root build (DSP lib + daemon + WavEqTest)
 ├── DSP/                    # Platform-agnostic biquad / 10-band EQ (C++)
-│   ├── OverlapAdd.{h,cpp}  # FFT block-convolution engine (FIR filter)
-│   └── EqPipeline.{h,cpp}  # Combines FIR+IIR: IIR-only/FIR-only/FIR-then-IIR
+│   └── OverlapAdd.{h,cpp}  # FFT block-convolution engine (FIR-filter prep, not yet wired in)
 ├── daemon/                 # Cross-platform audio daemon (C++)
 │   ├── main.cpp
 │   ├── eq_state.h          # Lock-free RT↔non-RT state
@@ -181,6 +181,9 @@ Equalizer/
 │       ├── eqapo_export.py   # Equalizer APO config export (offline validation)
 │       └── cli.py          # measure / visualize / plot / send
 ├── Equalizer/              # Windows APO DLL (existing)
+│   ├── ApoDsp.{h,cpp}      # Per-block gain/EQ/clamp math (cross-platform, unit tested)
+│   ├── RegistryUtil.{h,cpp} # Registry helpers behind Dll(Un)RegisterServer (Windows-only, unit tested)
+│   └── tests/              # BandEqualizer/ApoDsp tests (CMake) + COM/registry tests (Windows-only .vcxproj)
 ├── installer/              # Windows INF files
 ├── shared/
 │   ├── preset_schema.json  # JSON Schema for preset files

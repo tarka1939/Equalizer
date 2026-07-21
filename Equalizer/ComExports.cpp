@@ -1,4 +1,5 @@
 #include "Equalizer.h"
+#include "RegistryUtil.h"
 
 #include <windows.h>
 #include <combaseapi.h>
@@ -10,6 +11,15 @@ using namespace Microsoft::WRL;
 
 namespace
 {
+    // Real APO catalog location under HKLM. Kept as a named constant (rather
+    // than inlined into RegisterAsAudioProcessingObject below) so tests can
+    // see, at a glance, that production always targets this path while
+    // RegistryUtil's functions themselves take the root/prefix as arguments
+    // and are exercised against a scratch key in
+    // Equalizer/tests/test_registry_util.cpp.
+    constexpr wchar_t kApoCatalogKeyPrefix[] =
+        L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Audio\\AudioEngine\\AudioProcessingObjects";
+
     long g_moduleRefCount = 0;
 
     HMODULE GetThisModule() noexcept
@@ -37,105 +47,30 @@ namespace
         return S_OK;
     }
 
-    HRESULT GuidToString(REFGUID guid, _Out_writes_(cch) wchar_t* buf, size_t cch) noexcept
-    {
-        if (!buf || cch == 0)
-            return E_INVALIDARG;
-
-        const int n = StringFromGUID2(guid, buf, static_cast<int>(cch));
-        return (n > 0) ? S_OK : E_FAIL;
-    }
-
-    HRESULT SetRegStringValue(HKEY root, const wchar_t* subKey, const wchar_t* valueName, const wchar_t* value) noexcept
-    {
-        HKEY hKey{};
-        DWORD disp{};
-        const LONG rc = RegCreateKeyExW(root, subKey, 0, nullptr, REG_OPTION_NON_VOLATILE,
-            KEY_SET_VALUE, nullptr, &hKey, &disp);
-        if (rc != ERROR_SUCCESS)
-            return HRESULT_FROM_WIN32(rc);
-
-        const wchar_t* v = value ? value : L"";;
-        const DWORD cb = static_cast<DWORD>((wcslen(v) + 1) * sizeof(wchar_t));
-        const LONG rc2 = RegSetValueExW(hKey, valueName, 0, REG_SZ, reinterpret_cast<const BYTE*>(v), cb);
-        RegCloseKey(hKey);
-        if (rc2 != ERROR_SUCCESS)
-            return HRESULT_FROM_WIN32(rc2);
-
-        return S_OK;
-    }
-
-    HRESULT DeleteRegTree(HKEY root, const wchar_t* subKey) noexcept
-    {
-        const LONG rc = RegDeleteTreeW(root, subKey);
-        if (rc == ERROR_FILE_NOT_FOUND)
-            return S_OK;
-        if (rc != ERROR_SUCCESS)
-            return HRESULT_FROM_WIN32(rc);
-        return S_OK;
-    }
-
-    HRESULT SetRegDwordValue(HKEY root, const wchar_t* subKey, const wchar_t* valueName, DWORD value) noexcept
-    {
-        HKEY hKey{};
-        DWORD disp{};
-        const LONG rc = RegCreateKeyExW(root, subKey, 0, nullptr, REG_OPTION_NON_VOLATILE,
-            KEY_SET_VALUE, nullptr, &hKey, &disp);
-        if (rc != ERROR_SUCCESS)
-            return HRESULT_FROM_WIN32(rc);
-
-        const LONG rc2 = RegSetValueExW(hKey, valueName, 0, REG_DWORD, reinterpret_cast<const BYTE*>(&value), sizeof(value));
-        RegCloseKey(hKey);
-        if (rc2 != ERROR_SUCCESS)
-            return HRESULT_FROM_WIN32(rc2);
-
-        return S_OK;
-    }
-
     HRESULT RegisterAsAudioProcessingObject(const wchar_t* clsidStr) noexcept
     {
-        // Minimal Win10/11 registration so the Audio Engine recognizes the CLSID as an APO.
-        wchar_t apoKey[512]{};
-        HRESULT hr = StringCchPrintfW(apoKey, _countof(apoKey),
-            L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Audio\\AudioEngine\\AudioProcessingObjects\\%s",
-            clsidStr);
-        if (FAILED(hr)) return hr;
-
         // Use our existing registration properties to fill friendly name/version where possible.
         APO_REG_PROPERTIES* props = nullptr;
+        HRESULT hr;
         {
             Equalizer tmp;
             hr = tmp.GetRegistrationProperties(&props);
             if (FAILED(hr)) return hr;
         }
 
-        hr = SetRegStringValue(HKEY_LOCAL_MACHINE, apoKey, L"FriendlyName", props ? props->szFriendlyName : L"Equalizer");
-        if (FAILED(hr)) { CoTaskMemFree(props); return hr; }
-
-        hr = SetRegStringValue(HKEY_LOCAL_MACHINE, apoKey, L"Copyright", props ? props->szCopyrightInfo : L"");
-        if (FAILED(hr)) { CoTaskMemFree(props); return hr; }
-
-        hr = SetRegDwordValue(HKEY_LOCAL_MACHINE, apoKey, L"MajorVersion", props ? props->u32MajorVersion : 1);
-        if (FAILED(hr)) { CoTaskMemFree(props); return hr; }
-
-        hr = SetRegDwordValue(HKEY_LOCAL_MACHINE, apoKey, L"MinorVersion", props ? props->u32MinorVersion : 0);
-        if (FAILED(hr)) { CoTaskMemFree(props); return hr; }
-
-        // Optional but commonly present.
-        hr = SetRegDwordValue(HKEY_LOCAL_MACHINE, apoKey, L"Flags", props ? static_cast<DWORD>(props->Flags) : 0);
+        hr = RegistryUtil::RegisterApoCatalogEntry(HKEY_LOCAL_MACHINE, kApoCatalogKeyPrefix, clsidStr,
+            props ? props->szFriendlyName : L"Equalizer",
+            props ? props->szCopyrightInfo : L"",
+            props ? props->u32MajorVersion : 1,
+            props ? props->u32MinorVersion : 0,
+            props ? static_cast<DWORD>(props->Flags) : 0);
         CoTaskMemFree(props);
         return hr;
     }
 
     HRESULT UnregisterAsAudioProcessingObject(const wchar_t* clsidStr) noexcept
     {
-        wchar_t apoKey[512]{};
-        HRESULT hr = StringCchPrintfW(apoKey, _countof(apoKey),
-            L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Audio\\AudioEngine\\AudioProcessingObjects\\%s",
-            clsidStr);
-        if (FAILED(hr)) return hr;
-
-        return DeleteRegTree(HKEY_LOCAL_MACHINE, apoKey);
+        return RegistryUtil::UnregisterApoCatalogEntry(HKEY_LOCAL_MACHINE, kApoCatalogKeyPrefix, clsidStr);
     }
 
     class EqualizerClassFactory final : public RuntimeClass<RuntimeClassFlags<ClassicCom>, IClassFactory>
@@ -214,7 +149,7 @@ STDAPI DllCanUnloadNow(void)
 STDAPI DllRegisterServer(void)
 {
     wchar_t clsidStr[64]{};
-    HRESULT hr = GuidToString(CLSID_Equalizer, clsidStr, _countof(clsidStr));
+    HRESULT hr = RegistryUtil::GuidToString(CLSID_Equalizer, clsidStr, _countof(clsidStr));
     if (FAILED(hr)) return hr;
 
     wchar_t modulePath[MAX_PATH]{};
@@ -229,13 +164,13 @@ STDAPI DllRegisterServer(void)
     hr = StringCchPrintfW(inprocKey, _countof(inprocKey), L"%s\\InprocServer32", clsidKey);
     if (FAILED(hr)) return hr;
 
-    hr = SetRegStringValue(HKEY_LOCAL_MACHINE, clsidKey, nullptr, L"Equalizer");
+    hr = RegistryUtil::SetStringValue(HKEY_LOCAL_MACHINE, clsidKey, nullptr, L"Equalizer");
     if (FAILED(hr)) return hr;
 
-    hr = SetRegStringValue(HKEY_LOCAL_MACHINE, inprocKey, nullptr, modulePath);
+    hr = RegistryUtil::SetStringValue(HKEY_LOCAL_MACHINE, inprocKey, nullptr, modulePath);
     if (FAILED(hr)) return hr;
 
-    hr = SetRegStringValue(HKEY_LOCAL_MACHINE, inprocKey, L"ThreadingModel", L"Both");
+    hr = RegistryUtil::SetStringValue(HKEY_LOCAL_MACHINE, inprocKey, L"ThreadingModel", L"Both");
     if (FAILED(hr)) return hr;
 
     // Register under Audio Engine APO catalog.
@@ -248,7 +183,7 @@ STDAPI DllRegisterServer(void)
 STDAPI DllUnregisterServer(void)
 {
     wchar_t clsidStr[64]{};
-    HRESULT hr = GuidToString(CLSID_Equalizer, clsidStr, _countof(clsidStr));
+    HRESULT hr = RegistryUtil::GuidToString(CLSID_Equalizer, clsidStr, _countof(clsidStr));
     if (FAILED(hr)) return hr;
 
     // Best-effort: remove APO catalog entry first.
@@ -258,5 +193,5 @@ STDAPI DllUnregisterServer(void)
     hr = StringCchPrintfW(clsidKey, _countof(clsidKey), L"Software\\Classes\\CLSID\\%s", clsidStr);
     if (FAILED(hr)) return hr;
 
-    return DeleteRegTree(HKEY_LOCAL_MACHINE, clsidKey);
+    return RegistryUtil::DeleteTree(HKEY_LOCAL_MACHINE, clsidKey);
 }
