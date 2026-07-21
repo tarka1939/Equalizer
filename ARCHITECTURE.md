@@ -49,7 +49,9 @@ system running on two platforms. They don't share process, state, or IPC —
 each links `DSP/` directly and does its own thing. The GUI and CurveGen's
 `send` command only talk to the **daemon**, over the JSON-line socket. On
 Windows, there is currently no bridge between the GUI/CurveGen and the APO
-DLL — see [§7 Known issues](#7-known-issues-and-discrepancies).
+DLL — see [§7 Known issues](#7-known-issues-and-discrepancies). CurveGen also
+has a third, *offline* output path (`eq-curvegen eqapo`) that bypasses both
+the APO and the daemon entirely — see §6.
 
 For a step-by-step view of what actually executes, in order, see the two
 diagrams in [`docs/diagrams/`](docs/diagrams/):
@@ -366,14 +368,14 @@ link `DSP/` itself.
 
 ## 6. CurveGen (`CurveGen/`)
 
-Python 3, the room-correction measurement/curve-generation pipeline. Four
+Python 3, the room-correction measurement/curve-generation pipeline. Five
 modules, each independently testable and now independently tested:
 
 ```
-measurement.py          flatten.py              export.py           cli.py
-──────────────          ──────────              ─────────           ──────
-load_wav /               compute_correction:      write_preset /      measure / plot / send
-load_impulse_response    invert + reference to    read_preset /
+measurement.py          flatten.py              export.py           eqapo_export.py       cli.py
+──────────────          ──────────              ─────────           ───────────────       ──────
+load_wav /               compute_correction:      write_preset /      write_eqapo_config /  measure / eqapo /
+load_impulse_response    invert + reference to    read_preset /       render_eqapo_config   plot / send
   → (freqs, mag_db, sr)    1kHz + optional Harman  preset_to_gains
 smooth_octave              blend + clip + preamp
 ```
@@ -421,11 +423,48 @@ smooth_octave              blend + clip + preamp
   call despite the dependency being present in `pyproject.toml`), it just
   hand-checks that `len(gains_db) == len(band_hz)`.
 
+- **`eqapo_export.py`** — **offline, real-world validation path.** Writes an
+  [Equalizer APO](https://equalizerapo.com) config file (`Preamp: <dB>` +
+  `Filter <n>: ON PK Fc <Hz> Gain <dB> Q <q>` lines, format verified against
+  the [official Equalizer APO configuration reference](https://sourceforge.net/p/equalizerapo/wiki/Configuration%20reference/))
+  instead of this project's own JSON preset format. Equalizer APO's `PK`
+  filter type is the same peaking-biquad shape `DSP::Biquad`/`Equalizer10Band`
+  implement (§2.1), so this is a faithful stand-in for this project's own
+  filter shape, not a different approximation.
+
+  The reason this exists as a *separate* export path rather than extending
+  `export.py`: this project's own audio-hosting code currently has real gaps
+  that make it unsuitable for validating the curve-generation math against
+  actual playback on Windows — the in-repo APO never actually applies its
+  configured curve (§7.1), and the daemon/GUI's Windows IPC path is an
+  unimplemented stub on both ends (§7.2), with the daemon not even building
+  on Windows (§7.3). Equalizer APO is a mature, independently-verified,
+  widely-used engine, so routing a generated curve through it isolates "is
+  the curve-generation math right" from "does this project's own APO/daemon
+  work" — which is exactly the distinction needed when trying to validate
+  correctness in a real room, on real hardware, today.
+
+  `render_eqapo_config()` is a pure string-builder (`gains_db`, `band_hz`,
+  `preamp_db`, `q` in → config text out); `write_eqapo_config()` writes it to
+  disk. This module only *writes* the format — it does not parse Equalizer
+  APO's config files back in, and it has no runtime relationship to this
+  project's own DSP; it is generated once and consumed entirely by the
+  separate, third-party Equalizer APO application.
+
 - **`cli.py`**: `measure` runs the full pipeline and writes a preset;
-  `plot` does the same plus a matplotlib chart (raw vs. smoothed response,
-  bar chart of band gains); `send` reads a preset back and pushes it to a
+  **`eqapo` runs the exact same measurement + correction pipeline** (both
+  commands call a shared `_analyse()` helper — deliberately, so `eqapo`
+  can't silently drift into testing a different code path than `measure`
+  actually ships) **but writes an Equalizer APO config instead**; `plot`
+  does the pipeline plus a matplotlib chart (raw vs. smoothed response, bar
+  chart of band gains); `send` reads a preset back and pushes it to a
   running daemon over the same Unix socket / JSON-line protocol as the GUI
   (`set_preamp` then `set_bands`), independent of the GUI entirely.
+
+  Example: `eq-curvegen eqapo --input room.wav --output config.txt --harman`,
+  then install [Equalizer APO](https://equalizerapo.com) and either paste
+  `config.txt`'s contents into its main `config.txt`, or reference it with
+  an `Include: <path>` line.
 
 ---
 
@@ -478,6 +517,11 @@ here), so treat this as a strong, specific, textually-verifiable finding
 rather than a confirmed field observation — but the code reads
 unambiguously. If real listening tests ever suggested "the APO's EQ curve
 doesn't seem to do anything," this is almost certainly why.
+
+**Practical mitigation:** until this is fixed, `eq-curvegen eqapo` (§6) lets
+the curve-generation algorithm still be validated on real Windows hardware,
+by routing the generated curve through Equalizer APO instead of this
+project's own (currently non-functional) APO.
 
 ### 7.2 Windows IPC is a stub on both ends
 
@@ -569,6 +613,7 @@ of the `WavEqTest` target.
 | Correction-curve math | `CurveGen/tests/test_flatten.py` | Flat-input/zero-correction, boost inversion, 1kHz self-cancellation (§6), clipping, auto-preamp sign, Harman blending, arbitrary band counts |
 | Preset serialization | `CurveGen/tests/test_export.py` | Round-trip, schema-mismatch errors, directory creation |
 | FFT block convolution | `DSP/tests/test_overlap_add.cpp` | Parameter validation, `fftSize` always `{2,3,5}`-smooth, latency == `blockSize − 1` exactly, matches direct time-domain convolution (single call and arbitrary non-block-aligned call sizes), multi-channel independence, `Reset()` clears carried tail, filter hot-swap affects only not-yet-computed blocks |
+| Equalizer APO config export | `CurveGen/tests/test_eqapo_export.py`, `CurveGen/tests/test_cli_eqapo.py` | Preamp/filter line format round-trips through a regex parser, `PK` filter type used, 1-indexed sequential filter numbers, default vs. custom band list, scalar vs. per-band Q, parameter validation, `eqapo` CLI subcommand end-to-end against a synthetic WAV, and that `eqapo` and `measure` agree on the underlying gains/preamp (shared `_analyse()` pipeline) |
 
 Run everything:
 
@@ -607,6 +652,13 @@ cd CurveGen && pip install -e ".[dev]" && pytest tests/ -v
   for correctness/RT-safety of the engine itself, but since nothing calls it
   yet (§2.3), there's no test of it integrated into an actual signal chain —
   that will be a real target once a FIR-filter feature actually wires it in.
+- **Equalizer APO itself** — `eq-curvegen eqapo`'s output has been checked
+  against the format Equalizer APO documents and against a hand-rolled test
+  parser, but it has not been run through an actual Equalizer APO
+  installation in this environment (no Windows available here). Treat the
+  generated config as format-correct and pipeline-consistent, not as
+  confirmed-working against the real application, until someone does that
+  check on real Windows hardware.
 
 ---
 

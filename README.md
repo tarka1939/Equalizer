@@ -66,6 +66,24 @@ cd GUI && dotnet run
 #    Or click "Room Correction" to run CurveGen from inside the GUI.
 ```
 
+## Offline validation via Equalizer APO
+
+The in-repo Windows APO and daemon both have known gaps that make them
+unsuitable, today, for validating the curve-generation math against real
+playback (see [`ARCHITECTURE.md` §7.1–§7.3](ARCHITECTURE.md#7-known-issues-and-discrepancies)).
+As a workaround, `eq-curvegen eqapo` writes the same generated curve as an
+[Equalizer APO](https://equalizerapo.com) config file instead of this
+project's own JSON preset format:
+
+```bash
+eq-curvegen eqapo --input my_room.wav --output my_curve.txt --harman
+```
+
+Then install Equalizer APO and either paste `my_curve.txt`'s contents into
+its `config.txt`, or reference it with an `Include: <path>` line. See
+[`ARCHITECTURE.md` §6](ARCHITECTURE.md#6-curvegen-curvegen) for why this
+exists as a separate path rather than an extension of `measure`.
+
 ---
 
 ## IPC Protocol
@@ -128,10 +146,11 @@ Equalizer/
 ├── CurveGen/               # Python acoustic curve generator
 │   ├── pyproject.toml
 │   └── curvegen/
-│       ├── measurement.py  # WAV loading, PSD, smoothing
-│       ├── flatten.py      # Inversion + Harman target blend
-│       ├── export.py       # JSON preset write/read
-│       └── cli.py          # measure / plot / send
+│       ├── measurement.py    # WAV loading, PSD, smoothing
+│       ├── flatten.py        # Inversion + Harman target blend
+│       ├── export.py         # JSON preset write/read
+│       ├── eqapo_export.py   # Equalizer APO config export (offline validation)
+│       └── cli.py            # measure / eqapo / plot / send
 ├── Equalizer/              # Windows APO DLL (existing)
 ├── installer/              # Windows INF files
 ├── shared/
