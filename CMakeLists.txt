@@ -8,7 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # ──────────────────────────────────────────────────────────────────────────────
 # Testing
 # ──────────────────────────────────────────────────────────────────────────────
-option(EQUALIZER_BUILD_TESTS "Build unit test executables (dsp_tests, overlap_add_tests, eq_state_tests, ipc_server_tests)" ON)
+option(EQUALIZER_BUILD_TESTS "Build unit test executables (dsp_tests, overlap_add_tests, eq_pipeline_tests, eq_state_tests, ipc_server_tests)" ON)
 include(CTest)
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -41,6 +41,8 @@ add_library(dsp STATIC
     DSP/Equalizer10Band.inline.h
     DSP/OverlapAdd.h
     DSP/OverlapAdd.cpp
+    DSP/EqPipeline.h
+    DSP/EqPipeline.cpp
     ${KISSFFT_DIR}/kiss_fft.c
     ${KISSFFT_DIR}/kiss_fft.h
     ${KISSFFT_DIR}/kiss_fftr.c
@@ -81,6 +83,38 @@ if(EQUALIZER_BUILD_TESTS)
         $<$<CXX_COMPILER_ID:MSVC>:/W4 /O2>
     )
     add_test(NAME overlap_add_tests COMMAND overlap_add_tests)
+
+    add_executable(eq_pipeline_tests DSP/tests/test_eq_pipeline.cpp)
+    target_link_libraries(eq_pipeline_tests PRIVATE dsp)
+    target_compile_options(eq_pipeline_tests PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -O2>
+        $<$<CXX_COMPILER_ID:MSVC>:/W4 /O2>
+    )
+    add_test(NAME eq_pipeline_tests COMMAND eq_pipeline_tests)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # BandEqualizer + ApoDsp unit tests — the parts of Equalizer/ (the Windows
+    # APO project) with zero Windows dependencies. Equalizer.cpp/ComExports.cpp
+    # themselves only build on Windows via Equalizer.vcxproj (COM/APO SDK
+    # headers, Win32 registry APIs); see Equalizer/tests/EqualizerComExportsTests.vcxproj
+    # and Equalizer/tests/EqualizerRegistryUtilTests.vcxproj for those. ApoDsp.{h,cpp}
+    # holds the gain/EQ/clamp math extracted out of Equalizer::APOProcess
+    # specifically so it could be tested here.
+    # ──────────────────────────────────────────────────────────────────────────
+    add_executable(band_equalizer_tests Equalizer/tests/test_band_equalizer.cpp Equalizer/BandEqualizer.cpp)
+    target_compile_options(band_equalizer_tests PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -O2>
+        $<$<CXX_COMPILER_ID:MSVC>:/W4 /O2>
+    )
+    add_test(NAME band_equalizer_tests COMMAND band_equalizer_tests)
+
+    add_executable(apo_dsp_tests Equalizer/tests/test_apo_dsp.cpp Equalizer/ApoDsp.cpp)
+    target_link_libraries(apo_dsp_tests PRIVATE dsp)
+    target_compile_options(apo_dsp_tests PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -O2>
+        $<$<CXX_COMPILER_ID:MSVC>:/W4 /O2>
+    )
+    add_test(NAME apo_dsp_tests COMMAND apo_dsp_tests)
 endif()
 
 # ──────────────────────────────────────────────────────────────────────────────

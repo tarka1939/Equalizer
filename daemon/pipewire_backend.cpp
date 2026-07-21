@@ -13,7 +13,7 @@
 
 #include "pipewire_backend.h"
 #include "eq_state.h"
-#include "Equalizer10Band.h"  // from DSP/
+#include "EqPipeline.h"  // from DSP/
 
 #include <pipewire/pipewire.h>
 #include <spa/param/audio/format-utils.h>
@@ -26,9 +26,20 @@
 
 namespace eq {
 
+// FIR engine's internal analysis block size (see DSP::OverlapAdd::Prepare) --
+// independent of PipeWire's own callback block size, which OverlapAdd absorbs
+// regardless (DSP/OverlapAdd.h). maxImpulseLength is deliberately the *same*
+// constant as eq::EqState::kMaxFirTaps (daemon/eq_state.h), not a separately
+// chosen number that happens to match: that is the largest impulse response
+// the IPC layer will ever hand this engine (see ipc_server.cpp's set_fir
+// handler), so reusing the same symbol keeps the two in sync by construction
+// rather than by two magic numbers staying accidentally equal.
+static constexpr uint32_t kFirBlockSize = 256;
+static constexpr uint32_t kFirMaxImpulseLength = EqState::kMaxFirTaps;
+
 // ── Internal RT state ─────────────────────────────────────────────────────────
 struct PipeWireBackend::EqCore {
-    DSP::Equalizer10Band eq;
+    DSP::EqPipeline eq;
     std::array<float, kBandCount> gains{};
     float sample_rate = 48000.f;
     uint32_t channels = 2;
@@ -108,8 +119,8 @@ bool PipeWireBackend::Open() {
         return false;
     }
 
-    // Prepare the EQ core (default flat curve)
-    m_eq->eq.Prepare(48000.f, 2);
+    // Prepare the EQ core (default flat curve, FIR inactive)
+    m_eq->eq.Prepare(48000.f, 2, kFirBlockSize, kFirMaxImpulseLength);
     m_eq->gains.fill(0.f);
     m_eq->sample_rate = 48000.f;
     m_eq->channels    = 2;
@@ -156,6 +167,23 @@ void PipeWireBackend::OnProcess(void* userdata) {
         core->gains = newGains;
     }
 
+    // Check for an updated FIR impulse response from non-RT thread
+    // (atomic, no alloc -- ConsumePendingIr follows the exact same
+    // double-buffer-and-dirty-flag pattern as ConsumePending() above).
+    // outLength == 0 means "clear FIR" (see EqState::ConsumePendingIr's
+    // contract in eq_state.h) -- EqPipeline::SetImpulseResponse() would
+    // itself reject a zero-length call, so that case is routed to
+    // ClearImpulseResponse() explicitly rather than relying on it to fail
+    // safely.
+    static std::array<float, EqState::kMaxFirTaps> irBuf{};
+    uint32_t irLen = 0;
+    if (state->ConsumePendingIr(irBuf, irLen)) {
+        if (irLen > 0)
+            core->eq.SetImpulseResponse(irBuf.data(), irLen);
+        else
+            core->eq.ClearImpulseResponse();
+    }
+
     // Get buffers from PipeWire ports
     auto* pw_buf_in_L  = static_cast<pw_buffer*>(pw_filter_get_dsp_buffer(self->m_in_L,  0));
     auto* pw_buf_in_R  = static_cast<pw_buffer*>(pw_filter_get_dsp_buffer(self->m_in_R,  0));
@@ -178,7 +206,7 @@ void PipeWireBackend::OnProcess(void* userdata) {
     }
 
     // Interleave → process → deinterleave
-    // (Equalizer10Band expects interleaved float)
+    // (EqPipeline/Equalizer10Band/OverlapAdd all expect interleaved float)
     static float interleaved[8192 * 2];  // enough for 8192 frames stereo
     const uint32_t frames = n_samples;
     for (uint32_t i = 0; i < frames; ++i) {
@@ -213,7 +241,14 @@ void PipeWireBackend::OnParamChanged(void* userdata, uint32_t /*id*/,
 
     const float sr       = static_cast<float>(info.info.raw.rate);
     const uint32_t ch    = info.info.raw.channels;
-    self->m_eq->eq.Prepare(sr, ch);
+    // Re-Prepare()ing resets FIR to inactive (OverlapAdd's FFT buffers
+    // must be reallocated for the new blockSize/channels) but preserves
+    // IIR's currently-configured gains, matching Equalizer10Band's own
+    // pre-existing behavior (Biquad::Prepare() never touches configured
+    // coefficients) -- see EqPipeline::Prepare()'s contract in
+    // DSP/EqPipeline.h and EqPipeline_RePrepareResetsFirButPreservesIir
+    // in DSP/tests/test_eq_pipeline.cpp for the test that pins this down.
+    self->m_eq->eq.Prepare(sr, ch, kFirBlockSize, kFirMaxImpulseLength);
     self->m_eq->sample_rate = sr;
     self->m_eq->channels    = ch;
     self->m_state->sample_rate = sr;

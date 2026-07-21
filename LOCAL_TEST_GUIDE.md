@@ -1,5 +1,19 @@
 ﻿# Local testing guide (install / enable / verify / disable / uninstall)
 
+> **Before doing any of this by hand:** two automated test projects now cover
+> part of what this guide otherwise checks manually — `Equalizer/tests/EqualizerRegistryUtilTests.vcxproj`
+> (registry read/write logic, against a `HKEY_CURRENT_USER` scratch key, no
+> admin needed) and `Equalizer/tests/EqualizerComExportsTests.vcxproj`
+> (`DllGetClassObject`/`DllCanUnloadNow`/class factory behavior, and
+> `APOProcess()` called directly with real connection buffers). Both are in
+> `Equalizer.sln`. They do **not** replace this guide — actually registering
+> the DLL (`DllRegisterServer`/`regsvr32`) and wiring it to a real render
+> endpoint's `FxProperties` still needs the manual steps below, since that
+> requires admin rights and mutates real `HKEY_LOCAL_MACHINE` state — but
+> running the automated tests first is a faster way to catch a broken build
+> before going through this whole procedure. See `ARCHITECTURE.md` §9 for
+> what each test file covers.
+
 This guide is for testing the `Equalizer.dll` APO on a Windows machine with minimal long‑standing effects.
 
 > Assumptions

@@ -181,6 +181,125 @@ void IpcServer_GetStateReportsDefaults() {
     server.Stop();
 }
 
+void IpcServer_GetStateReportsFirLengthDefault() {
+    eq::EqState state;
+    eq::IpcServer server(&state);
+    CHECK(server.Start());
+
+    TestClient client;
+    CHECK(client.Connect(eq::IpcServer::kSocketPath));
+
+    std::string resp = client.SendCommand(R"({"cmd":"get_state"})");
+    CHECK(resp.find("\"fir_length\":0") != std::string::npos);
+
+    server.Stop();
+}
+
+void IpcServer_SetFirValidUpdatesStateAndAcks() {
+    eq::EqState state;
+    eq::IpcServer server(&state);
+    CHECK(server.Start());
+
+    TestClient client;
+    CHECK(client.Connect(eq::IpcServer::kSocketPath));
+
+    std::string resp = client.SendCommand(
+        R"({"cmd":"set_fir","taps":[0.5,0.25,-0.1,0.05]})");
+    CHECK(resp.find("\"ok\":true") != std::string::npos);
+
+    std::string state_resp = client.SendCommand(R"({"cmd":"get_state"})");
+    CHECK(state_resp.find("\"fir_length\":4") != std::string::npos);
+
+    // The RT side should see it queued via ConsumePendingIr, matching
+    // set_bands's ConsumePending contract (daemon/tests/test_eq_state.cpp
+    // covers ConsumePendingIr's own once-then-false semantics directly;
+    // this test only checks the IPC command actually reaches EqState).
+    CHECK(state.pending_ir_dirty.load() == true);
+    CHECK(state.pending_ir_length == 4u);
+
+    server.Stop();
+}
+
+void IpcServer_SetFirEmptyArrayIsRejected() {
+    eq::EqState state;
+    eq::IpcServer server(&state);
+    CHECK(server.Start());
+
+    TestClient client;
+    CHECK(client.Connect(eq::IpcServer::kSocketPath));
+
+    std::string resp = client.SendCommand(R"({"cmd":"set_fir","taps":[]})");
+    CHECK(resp.find("\"ok\":false") != std::string::npos);
+    CHECK(resp.find("must not be empty") != std::string::npos);
+
+    server.Stop();
+}
+
+void IpcServer_SetFirOversizedArrayIsRejected() {
+    eq::EqState state;
+    eq::IpcServer server(&state);
+    CHECK(server.Start());
+
+    TestClient client;
+    CHECK(client.Connect(eq::IpcServer::kSocketPath));
+
+    std::string taps_json = "[";
+    for (uint32_t i = 0; i < eq::EqState::kMaxFirTaps + 1; ++i) {
+        if (i) taps_json += ",";
+        taps_json += "0.01";
+    }
+    taps_json += "]";
+
+    std::string resp = client.SendCommand(
+        R"({"cmd":"set_fir","taps":)" + taps_json + "}");
+    CHECK(resp.find("\"ok\":false") != std::string::npos);
+    CHECK(resp.find("exceeds max length") != std::string::npos);
+
+    // Rejected requests must not partially apply.
+    CHECK(state.pending_ir_dirty.load() == false);
+
+    server.Stop();
+}
+
+void IpcServer_SetFirInvalidArrayIsRejected() {
+    eq::EqState state;
+    eq::IpcServer server(&state);
+    CHECK(server.Start());
+
+    TestClient client;
+    CHECK(client.Connect(eq::IpcServer::kSocketPath));
+
+    // Missing "taps" key entirely.
+    std::string resp = client.SendCommand(R"({"cmd":"set_fir"})");
+    CHECK(resp.find("\"ok\":false") != std::string::npos);
+    CHECK(resp.find("invalid taps array") != std::string::npos);
+
+    server.Stop();
+}
+
+void IpcServer_ClearFirResetsLengthAndAcks() {
+    eq::EqState state;
+    eq::IpcServer server(&state);
+    CHECK(server.Start());
+
+    TestClient client;
+    CHECK(client.Connect(eq::IpcServer::kSocketPath));
+
+    CHECK(client.SendCommand(
+        R"({"cmd":"set_fir","taps":[1,2,3]})").find("\"ok\":true") != std::string::npos);
+
+    std::string resp = client.SendCommand(R"({"cmd":"clear_fir"})");
+    CHECK(resp.find("\"ok\":true") != std::string::npos);
+
+    std::string state_resp = client.SendCommand(R"({"cmd":"get_state"})");
+    CHECK(state_resp.find("\"fir_length\":0") != std::string::npos);
+
+    CHECK(state.pending_ir_dirty.load() == true);
+    CHECK(state.pending_ir_length == 0u);
+
+    server.Stop();
+}
+
 void IpcServer_LoadPresetIsNotYetImplemented() {
     // Documents current behaviour: load_preset is a recognised command but
     // always errors. If this test starts failing because someone implements
@@ -237,6 +356,12 @@ int main() {
     RUN_TEST(IpcServer_SetPreampUpdatesState);
     RUN_TEST(IpcServer_SetEnabledUpdatesState);
     RUN_TEST(IpcServer_GetStateReportsDefaults);
+    RUN_TEST(IpcServer_GetStateReportsFirLengthDefault);
+    RUN_TEST(IpcServer_SetFirValidUpdatesStateAndAcks);
+    RUN_TEST(IpcServer_SetFirEmptyArrayIsRejected);
+    RUN_TEST(IpcServer_SetFirOversizedArrayIsRejected);
+    RUN_TEST(IpcServer_SetFirInvalidArrayIsRejected);
+    RUN_TEST(IpcServer_ClearFirResetsLengthAndAcks);
     RUN_TEST(IpcServer_LoadPresetIsNotYetImplemented);
     RUN_TEST(IpcServer_UnknownCommandIsRejected);
     RUN_TEST(IpcServer_EmptyLineIsRejected);

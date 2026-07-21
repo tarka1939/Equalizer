@@ -131,11 +131,13 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="..\DSP\Biquad.cpp" />
+    <ClCompile Include="ApoDsp.cpp" />
     <ClCompile Include="BandEqualizer.cpp" />
     <ClCompile Include="ComExports.cpp" />
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="Equalizer.cpp" />
     <ClCompile Include="Equalizer.h" />
+    <ClCompile Include="RegistryUtil.cpp" />
     <ClCompile Include="kissfft-131.2.0\kiss_fft.c" />
     <ClCompile Include="kissfft-131.2.0\kiss_fftr.c" />
   </ItemGroup>
@@ -146,8 +148,10 @@
     <ClInclude Include="..\DSP\Biquad.h" />
     <ClInclude Include="..\DSP\Equalizer10Band.h" />
     <ClInclude Include="..\DSP\Equalizer10Band.inline.h" />
+    <ClInclude Include="ApoDsp.h" />
     <ClInclude Include="BandEqualizer.h" />
     <ClInclude Include="Diagnostics.h" />
+    <ClInclude Include="RegistryUtil.h" />
     <ClInclude Include="kissfft-131.2.0\kiss_fft.h" />
     <ClInclude Include="kissfft-131.2.0\kiss_fftr.h" />
   </ItemGroup>

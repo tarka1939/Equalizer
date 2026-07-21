@@ -22,6 +22,16 @@ if(EQUALIZER_BUILD_TESTS)
     target_include_directories(ipc_server_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(ipc_server_tests PRIVATE Threads::Threads)
     add_test(NAME ipc_server_tests COMMAND ipc_server_tests)
+
+    # wasapi_backend.h is currently a stub (Open() just logs and returns
+    # false -- no real Win32/WASAPI calls), so it's safe to build and run
+    # this test on any platform by defining BACKEND_WASAPI locally, same as
+    # eq-daemon does for real on PLATFORM_WINDOWS below. See the comment at
+    # the top of tests/test_wasapi_backend.cpp: once a real implementation
+    # lands, move this target behind if(PLATFORM_WINDOWS).
+    add_executable(wasapi_backend_tests tests/test_wasapi_backend.cpp wasapi_backend.h eq_state.h)
+    target_include_directories(wasapi_backend_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME wasapi_backend_tests COMMAND wasapi_backend_tests)
 endif()
 
 # ──────────────────────────────────────────────────────────────────────────────

@@ -126,18 +126,26 @@ see `ARCHITECTURE.md` §6.1-6.2 for the full explanation.
 ## Testing
 
 ```bash
-# C++ (DSP core + daemon protocol/state — builds without PipeWire installed)
+# C++ (DSP core, daemon protocol/state, and the Windows-independent parts of
+# the APO project — all build without PipeWire or a Windows toolchain installed)
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)
 ctest --test-dir build --output-on-failure
 
 # Python (CurveGen)
 cd CurveGen && pip install -e ".[dev]" && pytest tests/ -v
+
+# Windows-only: COM/registry behavior for the APO DLL (build in Visual Studio)
+# Equalizer/tests/EqualizerRegistryUtilTests.vcxproj
+# Equalizer/tests/EqualizerComExportsTests.vcxproj
 ```
 
 See [`ARCHITECTURE.md`](ARCHITECTURE.md#9-testing-strategy-whats-covered-what-isnt)
-for exactly what's covered and what isn't (GUI and the Windows APO/WASAPI paths
-currently have no automated tests).
+for exactly what's covered and what isn't. The GUI still has no automated
+tests, and the Windows APO/WASAPI paths are now partially covered (the
+gain/EQ/clamp math, the WASAPI stub, and COM/registry behavior each have
+tests) but `LockForProcess()`, `DllRegisterServer`/`DllUnregisterServer`, and
+the real PipeWire/CoreAudio backends are still untested.
 
 ---
 
@@ -173,6 +181,9 @@ Equalizer/
 │       ├── eqapo_export.py   # Equalizer APO config export (offline validation)
 │       └── cli.py          # measure / visualize / plot / send
 ├── Equalizer/              # Windows APO DLL (existing)
+│   ├── ApoDsp.{h,cpp}      # Per-block gain/EQ/clamp math (cross-platform, unit tested)
+│   ├── RegistryUtil.{h,cpp} # Registry helpers behind Dll(Un)RegisterServer (Windows-only, unit tested)
+│   └── tests/              # BandEqualizer/ApoDsp tests (CMake) + COM/registry tests (Windows-only .vcxproj)
 ├── installer/              # Windows INF files
 ├── shared/
 │   ├── preset_schema.json  # JSON Schema for preset files

@@ -19,6 +19,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #ifndef _WIN32
 #  include <sys/socket.h>
@@ -91,6 +92,33 @@ bool JsonGetGains(const std::string& json, std::array<float, kBandCount>& out) {
         try {
             size_t consumed;
             out[i] = std::stof(json.substr(pos), &consumed);
+            pos += consumed;
+        } catch (...) { return false; }
+    }
+    return true;
+}
+
+/// Extract a variable-length array of floats for `key`: [...]. Unlike
+/// JsonGetGains (fixed at kBandCount), this reads however many comma-
+/// separated numbers are present between the brackets -- used for
+/// set_fir's "taps" array, whose length varies per impulse response.
+/// Returns false on a missing key, missing '[', or an unterminated/
+/// malformed array; an empty array ("[]") is valid and yields out.empty().
+bool JsonGetFloatArray(const std::string& json, const std::string& key, std::vector<float>& out) {
+    std::string needle = "\"" + key + "\"";
+    auto pos = json.find(needle);
+    if (pos == std::string::npos) return false;
+    pos = json.find('[', pos);
+    if (pos == std::string::npos) return false;
+    ++pos;
+    out.clear();
+    while (true) {
+        while (pos < json.size() && (json[pos] == ' ' || json[pos] == ',' || json[pos] == '\t')) ++pos;
+        if (pos >= json.size()) return false;  // unterminated array
+        if (json[pos] == ']') { ++pos; break; }
+        try {
+            size_t consumed;
+            out.push_back(std::stof(json.substr(pos), &consumed));
             pos += consumed;
         } catch (...) { return false; }
     }
@@ -241,6 +269,27 @@ std::string IpcServer::ProcessCommand(const std::string& line) {
         return OkResponse();
     }
 
+    if (cmd == "set_fir") {
+        std::vector<float> taps;
+        if (!JsonGetFloatArray(line, "taps", taps))
+            return ErrResponse("invalid taps array");
+        if (taps.empty())
+            return ErrResponse("taps array must not be empty (use clear_fir to disable FIR)");
+        if (taps.size() > EqState::kMaxFirTaps)
+            return ErrResponse("taps array exceeds max length (" + std::to_string(EqState::kMaxFirTaps) + ")");
+        m_state->SetImpulseResponse(taps.data(), static_cast<uint32_t>(taps.size()));
+        m_state->current_fir_length = static_cast<uint32_t>(taps.size());
+        std::cout << "[IPC] set_fir applied (" << taps.size() << " taps)\n";
+        return OkResponse();
+    }
+
+    if (cmd == "clear_fir") {
+        m_state->ClearImpulseResponse();
+        m_state->current_fir_length = 0;
+        std::cout << "[IPC] clear_fir applied\n";
+        return OkResponse();
+    }
+
     if (cmd == "get_state") {
         std::ostringstream ss;
         ss << "{\"gains_db\":[";
@@ -252,6 +301,7 @@ std::string IpcServer::ProcessCommand(const std::string& line) {
            << ",\"enabled\":"   << (m_state->enabled.load() ? "true" : "false")
            << ",\"sample_rate\":" << m_state->sample_rate
            << ",\"channels\":"  << m_state->channels
+           << ",\"fir_length\":" << m_state->current_fir_length
            << "}\n";
         return ss.str();
     }
