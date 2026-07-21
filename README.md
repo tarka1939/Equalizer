@@ -77,6 +77,13 @@ The daemon exposes a JSON-line socket at `/tmp/eq-daemon.sock` (Linux) or
 
 EQ presets are JSON files conforming to [`shared/preset_schema.json`](shared/preset_schema.json).
 
+## Diagrams
+
+[`docs/diagrams/dsp_execution_pipeline.svg`](docs/diagrams/dsp_execution_pipeline.svg) and
+[`docs/diagrams/curvegen_data_flow_pipeline.svg`](docs/diagrams/curvegen_data_flow_pipeline.svg)
+show the actual execution order through the DSP and CurveGen modules --
+see [`ARCHITECTURE.md`](ARCHITECTURE.md#1-system-map) for the walkthrough.
+
 ---
 
 ## Testing
