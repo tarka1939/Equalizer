@@ -459,7 +459,83 @@ smooth_octave              blend + clip + preamp
   does the pipeline plus a matplotlib chart (raw vs. smoothed response, bar
   chart of band gains); `send` reads a preset back and pushes it to a
   running daemon over the same Unix socket / JSON-line protocol as the GUI
-  (`set_preamp` then `set_bands`), independent of the GUI entirely.
+  (`set_preamp` then `set_bands`), independent of the GUI entirely;
+  `visualize` builds the 4-stage validation report described in §6.1.
+
+### 6.1 Visualization tool (`curvegen/visualize.py`, `eq-curvegen visualize`)
+
+Exists to answer one question end-to-end, visually: does the generated
+correction curve actually do what the math says it should, once it's
+applied to a real room? It renders four panels, each shown two ways:
+
+1. **Recorded input** — the "before" measurement, straight from
+   `loaders.load()` (§6.2), smoothed with `measurement.smooth_octave`.
+2. **Curve generated** — the continuous EQ response the 10 cascaded
+   peaking bands actually produce, evaluated at every point on a synthetic
+   log-spaced frequency grid (`synthetic_freq_grid`, 500 points, 20 Hz –
+   min(20 kHz, ~Nyquist)) using `evaluate_eq_response_db`, a direct Python
+   port of `DSP::Biquad::SetPeaking`'s exact RBJ formula (same
+   `omega`/`alpha`/`A` derivation as `DSP/Biquad.cpp`, see its comments) —
+   not an approximation, so this panel reflects the same math the daemon
+   would apply, independent of whether the daemon or APO actually works
+   (§7.1–§7.3). Bands are cascaded by **summing dB**, matching
+   `Equalizer10Band::Process()`'s back-to-back chain (linear gains multiply
+   ⇒ dB gains add). The orange dots are each band's *own* requested gain at
+   its *own* center frequency — exact by construction for an isolated RBJ
+   peaking filter — but they are **not** generally equal to the total
+   cascaded curve's value at that same frequency, because neighboring
+   bands' skirts overlap and add; the plot labels them "Requested band
+   gains" rather than implying they land on the blue curve.
+3. **Expected output** — stage 1 (interpolated in log-frequency onto
+   stage 2's grid) plus stage 2 plus preamp, computed mathematically. This
+   is a prediction, not a measurement.
+4. **Recorded output** — a second real "after" measurement, if
+   `--recorded-output` is supplied. Optional: omitted entirely, this panel
+   renders a placeholder and is marked `available=False` on the `Report`
+   object, rather than silently faking data. When present, stage 3's curve
+   is overlaid on it (dashed) so predicted-vs-actual can be compared by eye.
+
+**FFT vs. CPB**, applied identically to whichever of the four stages has
+data: "FFT" is the raw per-bin resolution result as returned by the
+loader/evaluator; "CPB" (Constant Percentage Bandwidth, i.e.
+fractional-octave smoothing) is the same data run through the existing
+`measurement.smooth_octave` at a configurable fraction (`--cpb-fraction`,
+default 1/3 octave). Both are plotted overlaid on every panel — CPB doesn't
+replace FFT, it's a second, standard-practice view of the same underlying
+curve, since a raw FFT trace is usually too jagged to compare against a
+smooth EQ curve by eye.
+
+**What this has and hasn't been checked against**: `plot_report()` was
+verified to render correctly in this (headless, no display) Linux sandbox
+using matplotlib's `Agg` backend against purely synthetic WAVs (pink-noise
+bed with an injected resonant peak and a narrow spike, "corrected" by a
+second synthetic WAV with that peak attenuated) — see
+`CurveGen/tests/test_visualize.py` and `test_cli_visualize.py`. It has
+**not** been checked against a real acoustic measurement or a real
+Equalizer APO / eq-daemon output; the biquad math itself is a direct
+line-for-line port of `DSP/Biquad.cpp`'s formula rather than a
+reimplementation from a textbook, which is the strongest guarantee
+available here short of that end-to-end hardware test.
+
+### 6.2 Measurement loader registry (`curvegen/loaders.py`)
+
+A small pluggable registry — `register_loader(name, fn, extensions=[...])`
+— added so `visualize` (and eventually `measure`/`plot`) can read
+measurement files in formats other than this project's WAV-based one
+without rearchitecting. `load(path, fmt=None, ...)` resolves a loader by
+explicit `fmt`, else by file extension (`detect_format`), else falls back
+to `"wav"`. The only loader currently registered is `"wav"`, a thin wrapper
+around the existing `measurement.load_wav` / `load_impulse_response`.
+
+**This intentionally implements only the extension point, not a second
+format** — the user has measurements in a different, currently-unspecified
+format they intend to visualize later; guessing at that format's column
+layout/units/headers here would risk silently misreading real data. Adding
+it is meant to be small: write a function matching
+`loader(path, channel=0, ir=False) -> (freqs, magnitude_db, sample_rate)`
+and call `register_loader`. See the module docstring in
+`curvegen/loaders.py` for the full contract, including that `sample_rate`
+may be `None` for formats that don't carry one.
 
   Example: `eq-curvegen eqapo --input room.wav --output config.txt --harman`,
   then install [Equalizer APO](https://equalizerapo.com) and either paste
@@ -612,6 +688,8 @@ of the `WavEqTest` target.
 | WAV/PSD/FFT measurement | `CurveGen/tests/test_measurement.py` | PCM normalization (int16/int32/uint8/float32/float64), peak-frequency accuracy for both Welch-PSD and FFT-IR paths, mono/stereo channel selection incl. modulo-wraparound, fractional-octave smoothing (DC-bin safety, spike smoothing, fraction sensitivity) |
 | Correction-curve math | `CurveGen/tests/test_flatten.py` | Flat-input/zero-correction, boost inversion, 1kHz self-cancellation (§6), clipping, auto-preamp sign, Harman blending, arbitrary band counts |
 | Preset serialization | `CurveGen/tests/test_export.py` | Round-trip, schema-mismatch errors, directory creation |
+| Measurement loader registry | `CurveGen/tests/test_loaders.py` | Extension auto-detection (incl. uppercase), explicit-format override, `wav` fallback for unrecognised extensions, `--ir` flag routing, unknown-format error message, register/overwrite semantics |
+| Visualization report (biquad eval + 4-stage build + render) | `CurveGen/tests/test_visualize.py`, `CurveGen/tests/test_cli_visualize.py` | 0dB-gain exact passthrough, single-band response equals its own gain at its own center frequency (independent of Q), cascaded-band dB additivity, `synthetic_freq_grid` bounds/monotonicity, `build_report` with/without stage 4, expected-output arithmetic vs. a manual recomputation, PNG actually rendered (with and without stage 4) via matplotlib's `Agg` backend, CLI end-to-end against synthetic WAVs |
 | FFT block convolution | `DSP/tests/test_overlap_add.cpp` | Parameter validation, `fftSize` always `{2,3,5}`-smooth, latency == `blockSize − 1` exactly, matches direct time-domain convolution (single call and arbitrary non-block-aligned call sizes), multi-channel independence, `Reset()` clears carried tail, filter hot-swap affects only not-yet-computed blocks |
 | Equalizer APO config export | `CurveGen/tests/test_eqapo_export.py`, `CurveGen/tests/test_cli_eqapo.py` | Preamp/filter line format round-trips through a regex parser, `PK` filter type used, 1-indexed sequential filter numbers, default vs. custom band list, scalar vs. per-band Q, parameter validation, `eqapo` CLI subcommand end-to-end against a synthetic WAV, and that `eqapo` and `measure` agree on the underlying gains/preamp (shared `_analyse()` pipeline) |
 
@@ -643,6 +721,14 @@ cd CurveGen && pip install -e ".[dev]" && pytest tests/ -v
   was written in, and there is no existing GUI test project to extend. The
   ViewModel logic (throttling, clamping, preset round-trip) is a reasonable
   next target if a test project is added.
+- **A second measurement-file format** — `curvegen/loaders.py` only has the
+  extension point implemented (§6.2); no second format is registered or
+  tested yet, since its exact layout wasn't known when this was written.
+- **`visualize`'s output against a real acoustic measurement or real
+  Equalizer APO / eq-daemon audio** — only checked against synthetic WAVs
+  in this sandbox (§6.1); the biquad math is a direct port of
+  `DSP/Biquad.cpp`, which is the closest available substitute for that
+  end-to-end hardware test.
 - **`Tools/WavEqTest.cpp`** — this is a manual inspection CLI, not something
   with pass/fail assertions; it's still useful as a quick end-to-end sanity
   check (`WavEqTest in.wav out.wav`) and is exercised that way in

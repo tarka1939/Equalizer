@@ -59,6 +59,12 @@ eq-curvegen --help
 # 2. Generate a room-correction preset from a measurement
 eq-curvegen measure --input my_room.wav --output my_preset.json --harman
 
+# 2b. (optional) Validate the curve visually: recorded input, generated
+#     curve, mathematically-expected output, and (if you have it) a
+#     second real post-correction measurement -- each as both FFT and
+#     1/3-octave (CPB) views.
+eq-curvegen visualize --input my_room.wav --output validation_report.png
+
 # 3. Launch the GUI
 cd GUI && dotnet run
 
@@ -101,6 +107,19 @@ EQ presets are JSON files conforming to [`shared/preset_schema.json`](shared/pre
 [`docs/diagrams/curvegen_data_flow_pipeline.svg`](docs/diagrams/curvegen_data_flow_pipeline.svg)
 show the actual execution order through the DSP and CurveGen modules --
 see [`ARCHITECTURE.md`](ARCHITECTURE.md#1-system-map) for the walkthrough.
+
+## Visualization
+
+`eq-curvegen visualize` renders a 4-panel report (recorded input, curve
+generated, expected output, recorded output) with both an FFT and a
+1/3-octave (CPB) view per panel, so a generated correction curve can be
+sanity-checked against real measurements without relying on this
+project's own Windows APO/daemon (see `ARCHITECTURE.md` §7.1-7.3 for why
+that path isn't trustworthy yet). The 4th panel is optional -- omit
+`--recorded-output` if you haven't re-measured after applying the
+correction. Measurement file formats other than this project's WAV
+reader can be added via `curvegen/loaders.py`'s small plugin registry;
+see `ARCHITECTURE.md` §6.1-6.2 for the full explanation.
 
 ---
 
@@ -146,11 +165,13 @@ Equalizer/
 ├── CurveGen/               # Python acoustic curve generator
 │   ├── pyproject.toml
 │   └── curvegen/
-│       ├── measurement.py    # WAV loading, PSD, smoothing
-│       ├── flatten.py        # Inversion + Harman target blend
-│       ├── export.py         # JSON preset write/read
+│       ├── measurement.py  # WAV loading, PSD, smoothing
+│       ├── flatten.py      # Inversion + Harman target blend
+│       ├── export.py       # JSON preset write/read
+│       ├── loaders.py      # Pluggable measurement-file loader registry
+│       ├── visualize.py    # 4-stage FFT+CPB validation report builder
 │       ├── eqapo_export.py   # Equalizer APO config export (offline validation)
-│       └── cli.py            # measure / eqapo / plot / send
+│       └── cli.py          # measure / visualize / plot / send
 ├── Equalizer/              # Windows APO DLL (existing)
 ├── installer/              # Windows INF files
 ├── shared/
