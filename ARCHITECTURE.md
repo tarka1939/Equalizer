@@ -276,10 +276,26 @@ struct EqState {
 };
 ```
 
-Same double-buffer-and-flag pattern as `Biquad`'s coefficient swap, one level
-up: the IPC thread calls `SetGains()`, the audio callback polls
-`ConsumePending()` once per buffer and only re-configures the `Equalizer10Band`
-when something actually changed.
+**Who consumes this, and why it is not lock-free any more.** It used to be
+described as the same double-buffer-and-flag pattern as `Biquad`'s coefficient
+swap, with the *audio callback* polling `ConsumePending()` once per buffer.
+Two things were wrong with that:
+
+1. It was not a double buffer. There is one `pending_gains` array (and one
+   `pending_ir`), so a second `SetGains()` could overwrite it while the reader
+   was mid-copy -- a data race, not merely a stale read.
+2. Consuming on the RT thread meant the RT thread also had to *apply* the
+   result, and applying means `SetBandsPeaking()` (10x `sin`/`cos`/`pow`) or
+   `SetImpulseResponse()` (a heap allocation and a full FFT). Both are
+   documented non-RT. Every `set_fir` command allocated inside the audio
+   callback.
+
+So the consumer is now a dedicated **control thread** owned by the audio
+backend (`PipeWireBackend::ControlLoop`, section 5.1). The RT callback reads
+only the `enabled` and `preamp_db` atomics. With both ends of the handoff off
+the RT path, the pending arrays are guarded by an ordinary mutex, and the
+control thread blocks on `EqState::WaitForUpdate()` rather than polling.
+`ConsumePending*()`'s once-then-false semantics are unchanged.
 
 **A real seam worth knowing about** (covered explicitly by
 `EqState_SetGainsMarksDirtyAndStoresPending` in
@@ -332,22 +348,46 @@ compile time via `BACKEND_PIPEWIRE` / `BACKEND_WASAPI` / `BACKEND_COREAUDIO`
 (set by `daemon/CMakeLists.txt` based on `PLATFORM_LINUX` /
 `PLATFORM_WINDOWS` / `PLATFORM_MAC`).
 
-- **PipeWire (Linux) — implemented.** `pipewire_backend.cpp` registers a
-  PipeWire *filter* node with 2 input + 2 output ports, interleaves the
-  planar buffers PipeWire hands it, runs them through an
-  `Equalizer10Band`, applies preamp + `[-1,1]` clamp, and de-interleaves back
-  out. Gains are pulled from `EqState::ConsumePending()` once per RT
-  callback (`OnProcess`).
+- **PipeWire (Linux) — written, never compiled.** `pipewire_backend.cpp`
+  registers a PipeWire *filter* node with 2 input + 2 output ports,
+  interleaves the planar buffers PipeWire hands it, runs them through the
+  `EqPipeline` (FIR then IIR), applies preamp + a NaN-folding `[-1,1]` clamp,
+  and de-interleaves back out.
+
+  Threading is a three-way split: the RT callback (`OnProcess`) does audio and
+  nothing else; a **control thread** (`ControlLoop`) owns every non-RT DSP
+  call — `Prepare`, `SetBandsPeaking`, `SetImpulseResponse` — and is what
+  consumes `EqState`'s pending gains/IR; and `OnParamChanged` only records the
+  new sample rate, handing the re-`Prepare()` to the control thread so all
+  reconfiguration happens on one thread. Because `Prepare()` reallocates the
+  buffers `Process()` reads, it runs behind a `BeginReconfigure()` /
+  `EndReconfigure()` handshake (a Dekker pair of seq_cst flags) during which
+  the RT thread falls back to passthrough. Nothing else needs the handshake:
+  the other setters publish through the existing atomic slot swaps.
+
+  **Caveat — this file has never been built.** No development machine used on
+  this project has had `libpipewire-0.3-dev`. Reviewing it against the
+  PipeWire API found that both event callbacks had the wrong signatures
+  (`process` takes `(void*, struct spa_io_position*)`; `param_changed` takes
+  `(void*, void*, uint32_t, const struct spa_pod*)`) and that the RT path
+  mixed `pw_filter_get_dsp_buffer()` with the `pw_filter_dequeue_buffer()`
+  data layout. Those are corrected, but corrected by reading the API rather
+  than by compiling against it. Treat the PipeWire-facing code as unproven
+  until it is built and run on a Linux host.
 - **WASAPI (Windows) — declared but not implemented.** `wasapi_backend.h`
-  exists as a header; there is no corresponding `.cpp`, and
-  `daemon/CMakeLists.txt`'s Windows branch references
-  `wasapi_backend.cpp` as a source file that does not exist in the repo.
-  **The daemon does not currently build on Windows.** The header itself is
+  exists as a header with no corresponding `.cpp`. `daemon/CMakeLists.txt`'s
+  Windows branch used to list that non-existent `wasapi_backend.cpp` as a
+  source, so configuring failed outright; it now builds the header-only stub,
+  which links (`Open()` logs and returns `false`). The header itself is
   a stub (`Open()` logs and returns `false`) with no real Win32/WASAPI calls
   in it, which is exactly what makes `daemon/tests/test_wasapi_backend.cpp`
   able to build and run cross-platform right now — see §9.
-- **CoreAudio (macOS) — same situation**: header/CMake wiring exists,
-  implementation doesn't.
+- **CoreAudio (macOS) — not present at all**: neither
+  `coreaudio_backend.cpp` nor `.h` exists. The CMake branch that referenced
+  them (and the fallback branch referencing an equally absent
+  `stub_backend.cpp`) now skips the `eq-daemon` target with an explanatory
+  message instead of failing at configure time. The DSP and IPC unit tests
+  still build and run on those platforms.
 
 So today, `eq-daemon` is a Linux-only, PipeWire-only binary in practice,
 despite the CMake scaffolding for three platforms.
