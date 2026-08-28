@@ -62,78 +62,26 @@ FFT_GRID_MIN_HZ = 20.0
 FFT_GRID_MAX_HZ = 20000.0
 DEFAULT_SAMPLE_RATE = 48000.0  # fallback only; see loaders.py's sample_rate note
 
+# Fractional-octave smoothing applied before computing the correction curve.
+# Must match cli._analyse()'s value, which is what `measure` and `eqapo` use --
+# this is the analysis setting, distinct from CPB_FRACTION, which only affects
+# how the report is drawn.
+ANALYSIS_FRACTION = 1.0 / 3.0
 
-# ── RBJ peaking-biquad response (mirrors DSP::Biquad::SetPeaking exactly) ───
+
+# ── RBJ peaking-biquad response ────────────────────────────────────
 #
-# This must stay numerically in step with DSP/Biquad.cpp's SetPeaking(): both
-# implement the same RBJ ("Audio EQ Cookbook") peaking-EQ formula, verified
-# side by side, not derived independently. If Biquad.cpp's formula ever
-# changes, this needs to change with it or "curve generated"/"expected
-# output" stop reflecting what the real DSP does.
-
-def _peaking_biquad_coeffs(center_hz: float, q: float, gain_db: float, sample_rate: float):
-    sr = sample_rate if sample_rate and sample_rate > 0 else DEFAULT_SAMPLE_RATE
-    omega = 2.0 * np.pi * center_hz / sr
-    sinw = np.sin(omega)
-    cosw = np.cos(omega)
-    A = 10.0 ** (gain_db / 40.0)  # sqrt of linear power gain
-    alpha = sinw / (2.0 * q)
-
-    b0 = 1.0 + alpha * A
-    b1 = -2.0 * cosw
-    b2 = 1.0 - alpha * A
-    a0 = 1.0 + alpha / A
-    a1 = -2.0 * cosw
-    a2 = 1.0 - alpha / A
-
-    return b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0
-
-
-def _biquad_magnitude_db(freqs_hz: np.ndarray, b0, b1, b2, a1, a2, sample_rate: float) -> np.ndarray:
-    """|H(e^jw)| in dB for a normalised (a0=1) biquad, at each frequency in freqs_hz."""
-    sr = sample_rate if sample_rate and sample_rate > 0 else DEFAULT_SAMPLE_RATE
-    w = 2.0 * np.pi * np.asarray(freqs_hz, dtype=float) / sr
-    z_inv = np.exp(-1j * w)
-    num = b0 + b1 * z_inv + b2 * z_inv ** 2
-    den = 1.0 + a1 * z_inv + a2 * z_inv ** 2
-    h = num / den
-    return 20.0 * np.log10(np.maximum(np.abs(h), 1e-12))
-
-
-def evaluate_eq_response_db(
-    freqs_hz: Sequence[float],
-    band_hz: Sequence[float],
-    gains_db: Sequence[float],
-    q: Union[float, Sequence[float]] = 1.0,
-    sample_rate: float = DEFAULT_SAMPLE_RATE,
-) -> np.ndarray:
-    """
-    Continuous magnitude response (dB) of the cascaded N-band peaking EQ
-    DSP::Equalizer10Band would apply, evaluated at `freqs_hz`. Cascaded
-    (series) biquads multiply in linear magnitude, i.e. add in dB, so this
-    is a plain sum over bands -- matching Equalizer10Band::Process()'s
-    back-to-back band chain (§2.2 in ARCHITECTURE.md).
-
-    Does NOT include preamp; callers add that separately (a constant dB
-    offset), since preamp is a separate, simpler stage of the chain.
-    """
-    freqs_hz = np.asarray(freqs_hz, dtype=float)
-    if len(band_hz) != len(gains_db):
-        raise ValueError(
-            f"band_hz length ({len(band_hz)}) must match gains_db length ({len(gains_db)})"
-        )
-    if isinstance(q, (int, float)):
-        q_values = [float(q)] * len(band_hz)
-    else:
-        q_values = [float(v) for v in q]
-        if len(q_values) != len(band_hz):
-            raise ValueError(f"q length ({len(q_values)}) must match band_hz length ({len(band_hz)})")
-
-    total_db = np.zeros_like(freqs_hz)
-    for hz, gain, qv in zip(band_hz, gains_db, q_values):
-        b0, b1, b2, a1, a2 = _peaking_biquad_coeffs(float(hz), qv, float(gain), sample_rate)
-        total_db += _biquad_magnitude_db(freqs_hz, b0, b1, b2, a1, a2, sample_rate)
-    return total_db
+# These live in curvegen/response.py now: flatten.py needs the same cascade
+# math for its auto-preamp headroom calculation, and it cannot import
+# visualize (visualize imports flatten). Re-exported here so
+# `visualize.evaluate_eq_response_db(...)` keeps working for existing
+# callers and tests.
+from .response import (  # noqa: F401
+    _peaking_biquad_coeffs,
+    _biquad_magnitude_db,
+    evaluate_eq_response_db,
+    cascade_peak_db,
+)
 
 
 def synthetic_freq_grid(sample_rate: float, points: int = FFT_GRID_POINTS) -> np.ndarray:
@@ -198,9 +146,21 @@ def build_report(
     cpb_freqs1, cpb_mag1 = measurement.smooth_octave(freqs1, mag1, fraction=cpb_fraction)
     stage1 = StageCurve("Recorded input", freqs1, mag1, cpb_freqs1, cpb_mag1)
 
-    # Stage 2: curve generated
+    # Stage 2: curve generated.
+    #
+    # The correction MUST be derived from the same input `measure`/`eqapo`
+    # derive it from, or this report validates something the rest of the tool
+    # never produces. cli._analyse() smooths at a fixed 1/3 octave before
+    # calling compute_correction(); this used to pass the raw, unsmoothed
+    # mag1, so the "curve generated" panel showed a different curve than the
+    # one a `measure` run on the same file would write out.
+    #
+    # Note this deliberately uses ANALYSIS_FRACTION, not `cpb_fraction`:
+    # cpb_fraction only controls how wide the display smoothing is, and
+    # changing a view setting must not change the curve being validated.
+    _, analysis_mag1 = measurement.smooth_octave(freqs1, mag1, fraction=ANALYSIS_FRACTION)
     gains_db, preamp_db = flatten.compute_correction(
-        freqs1, mag1, max_gain_db=max_gain_db, use_harman_target=harman,
+        freqs1, analysis_mag1, max_gain_db=max_gain_db, use_harman_target=harman,
     )
     band_hz = flatten.DEFAULT_BAND_HZ
     sr_for_eval = sr1 if sr1 else DEFAULT_SAMPLE_RATE
