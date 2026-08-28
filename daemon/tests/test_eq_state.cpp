@@ -1,7 +1,15 @@
 /*
- * test_eq_state.cpp — Unit tests for eq::EqState, the lock-free handoff
- * structure shared between the IPC (non-RT) thread and the audio (RT)
- * callback.
+ * test_eq_state.cpp — Unit tests for eq::EqState, the handoff structure
+ * shared between the IPC thread and the audio backend's control thread.
+ *
+ * Note the threading model changed: EqState used to be described as a
+ * lock-free RT<->non-RT structure, but the RT thread no longer consumes from
+ * it at all (it only reads the `enabled`/`preamp_db` atomics). Gains and
+ * impulse responses are consumed by a non-RT control thread, because applying
+ * them runs transcendental math and a full FFT. Both ends being non-RT is why
+ * the pending arrays can now be mutex-guarded -- which they need to be: the
+ * previous "double buffer" was a single buffer, and a writer could overwrite
+ * it mid-copy. The ConsumePending*() semantics these tests pin are unchanged.
  *
  * No external test framework (see DSP/tests/test_biquad.cpp for the same
  * hand-rolled pattern used throughout this project).
