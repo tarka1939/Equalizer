@@ -27,8 +27,10 @@
  */
 #include "../EqPipeline.h"
 
+#include <array>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <random>
 #include <vector>
 
@@ -332,6 +334,99 @@ void EqPipeline_RePrepareResetsFirButPreservesIir() {
         CHECK(actual[i] == expected[i]);
 }
 
+// A Process() call whose `channels` disagrees with what Prepare() was given
+// must pass audio through, not leave the output buffer alone. Previously the
+// call fell through to the stage dispatch, where OverlapAdd::Process()'s own
+// channel guard returned without writing anything -- so with FIR active the
+// caller got back whatever uninitialised or stale data its buffer held, while
+// every other degenerate case in this class degrades to passthrough.
+void EqPipeline_ChannelMismatchIsPassthroughNotUntouched() {
+    DSP::EqPipeline pipeline;
+    CHECK(pipeline.Prepare(48000.0f, 2, 64, 16));
+
+    const std::vector<float> taps{ 0.5f, 0.25f, 0.125f };
+    CHECK(pipeline.SetImpulseResponse(taps.data(), static_cast<uint32_t>(taps.size())));
+    CHECK(pipeline.IsFirActive());
+
+    std::vector<float> input(120);
+    for (size_t i = 0; i < input.size(); ++i)
+        input[i] = static_cast<float>(i) * 0.01f;
+
+    // Poison the output so "left untouched" is distinguishable from "copied".
+    std::vector<float> output(input.size(), -12345.0f);
+
+    // Prepared for 2 channels, called with 3.
+    pipeline.Process(input.data(), output.data(), 40, 3);
+
+    for (size_t i = 0; i < input.size(); ++i)
+        CHECK(output[i] == input[i]);
+}
+
+// Same guard, in place (input == output): must be a no-op, never a partial
+// write of half-filtered data.
+void EqPipeline_ChannelMismatchInPlaceLeavesDataIntact() {
+    DSP::EqPipeline pipeline;
+    CHECK(pipeline.Prepare(48000.0f, 2, 64, 16));
+
+    std::array<float, DSP::Equalizer10Band::BandCount> centres{
+        31.f, 62.f, 125.f, 250.f, 500.f, 1000.f, 2000.f, 4000.f, 8000.f, 16000.f };
+    std::array<float, DSP::Equalizer10Band::BandCount> gains{};
+    gains[4] = 6.0f;
+    pipeline.SetBandsPeaking(centres, gains, 1.0f);
+    CHECK(pipeline.IsIirActive());
+
+    std::vector<float> buffer(90);
+    for (size_t i = 0; i < buffer.size(); ++i)
+        buffer[i] = static_cast<float>(i) * 0.5f;
+    const std::vector<float> original = buffer;
+
+    pipeline.Process(buffer.data(), buffer.data(), 30, 3);  // prepared for 2
+
+    for (size_t i = 0; i < buffer.size(); ++i)
+        CHECK(buffer[i] == original[i]);
+}
+
+// Null buffers must be rejected rather than dereferenced.
+void EqPipeline_NullBuffersAreIgnored() {
+    DSP::EqPipeline pipeline;
+    CHECK(pipeline.Prepare(48000.0f, 2, 64, 16));
+
+    std::vector<float> buffer(64, 1.0f);
+    pipeline.Process(nullptr, buffer.data(), 32, 2);
+    pipeline.Process(buffer.data(), nullptr, 32, 2);
+
+    for (float v : buffer)
+        CHECK(v == 1.0f);
+}
+
+// Non-finite taps must be refused, leaving the previously installed filter
+// in place -- a NaN tap smears across every FFT bin and from there into every
+// output sample, permanently.
+void EqPipeline_NonFiniteTapsAreRejected() {
+    DSP::EqPipeline pipeline;
+    CHECK(pipeline.Prepare(48000.0f, 2, 64, 16));
+
+    const std::vector<float> good{ 1.0f, 0.5f };
+    CHECK(pipeline.SetImpulseResponse(good.data(), 2));
+    CHECK(pipeline.IsFirActive());
+
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const std::vector<float> bad{ 1.0f, nan, 0.25f };
+    CHECK(pipeline.SetImpulseResponse(bad.data(), 3) == false);
+    CHECK(pipeline.IsFirActive());  // still the good filter, still active
+
+    const float inf = std::numeric_limits<float>::infinity();
+    const std::vector<float> bad2{ inf, 0.1f };
+    CHECK(pipeline.SetImpulseResponse(bad2.data(), 2) == false);
+
+    // Output must remain finite.
+    std::vector<float> input(128, 0.25f);
+    std::vector<float> output(128, 0.0f);
+    pipeline.Process(input.data(), output.data(), 64, 2);
+    for (float v : output)
+        CHECK(std::isfinite(v));
+}
+
 }  // namespace
 
 int main() {
@@ -346,6 +441,10 @@ int main() {
     RUN_TEST(EqPipeline_ResetPreservesActiveFlagsAndConfiguration);
     RUN_TEST(EqPipeline_SetImpulseResponseRejectsOversizedTaps);
     RUN_TEST(EqPipeline_RePrepareResetsFirButPreservesIir);
+    RUN_TEST(EqPipeline_ChannelMismatchIsPassthroughNotUntouched);
+    RUN_TEST(EqPipeline_ChannelMismatchInPlaceLeavesDataIntact);
+    RUN_TEST(EqPipeline_NullBuffersAreIgnored);
+    RUN_TEST(EqPipeline_NonFiniteTapsAreRejected);
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

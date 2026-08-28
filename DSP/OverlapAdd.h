@@ -18,12 +18,11 @@ namespace DSP
 {
     // Block-based FFT convolution engine (classic Overlap-Add / "OLA").
     //
-    // Status: this is infrastructure for a *future* FIR filter feature
-    // (e.g. measured room-correction impulse responses, linear-phase
-    // crossovers). It is not currently wired into Equalizer10Band or the
-    // daemon's signal chain -- Biquad-based peaking EQ still does all
-    // production audio processing. OverlapAdd exists so that work can be
-    // added later without redesigning the convolution machinery.
+    // Status: wired into the live signal path via DSP::EqPipeline, which the
+    // PipeWire daemon backend drives (daemon/pipewire_backend.cpp). The IIR
+    // peaking cascade (Equalizer10Band) still handles the 10-band EQ; this
+    // engine handles measured/linear-phase FIR correction upstream of it.
+    // The Windows APO (Equalizer/) does not use it.
     //
     // Algorithm:
     //   - Input arrives in a continuous stream; internally it is grouped
@@ -53,14 +52,20 @@ namespace DSP
     // the derivation in comment form.
     //
     // RT-safety:
-    //   - Prepare() and SetImpulseResponse() are non-RT: they allocate and
-    //     run a forward FFT to (re)build the filter's frequency-domain
-    //     representation.
+    //   - Prepare() is non-RT: it allocates every buffer the other methods
+    //     use, including SetImpulseResponse()'s zero-padding scratch.
+    //   - SetImpulseResponse() is non-RT: it does not allocate (the scratch
+    //     is preallocated), but it runs a full forward FFT of fftSize, which
+    //     is far too much work for an audio callback. Call it from a control
+    //     thread; it is designed to run concurrently with Process().
     //   - Process() is RT-safe: no allocation, no locks. The active filter
     //     spectrum is published via the same double-buffer + atomic-index
-    //     pattern Biquad uses (see Biquad.h) so a concurrent
-    //     SetImpulseResponse() call from a non-RT/control thread can never
-    //     tear a spectrum mid-read by the RT thread.
+    //     pattern Biquad uses (see Biquad.h): a single concurrent
+    //     SetImpulseResponse() writes the slot Process() is not pointed at,
+    //     so it cannot tear that read. As with Biquad, two SetImpulseResponse()
+    //     calls landing inside one ProcessOneBlock() can reuse the slot the
+    //     RT thread holds -- see the note on m_filterSpectrum below for the
+    //     exact scope of the guarantee.
     //   - kiss_fftr()/kiss_fftri() themselves are allocation-free for every
     //     fftSize this class will realistically produce. fftSize is always
     //     picked via kiss_fftr_next_fast_size_real(), which guarantees
@@ -101,12 +106,15 @@ namespace DSP
         // Installs an identity (passthrough) impulse response on success.
         bool Prepare(uint32_t blockSize, uint32_t maxImpulseLength, uint32_t channels) noexcept;
 
-        // Non-RT. Installs a new impulse response (1 <= length <=
-        // maxImpulseLength, as fixed by Prepare()). The same FIR is applied
-        // to every channel. Computes the filter's frequency-domain
-        // representation and publishes it atomically for Process() to pick
-        // up. Returns false if length is 0, exceeds maxImpulseLength, or
-        // Prepare() hasn't been called successfully.
+        // Non-RT (allocation-free, but runs a full fftSize forward FFT --
+        // call it from a control thread, never from an audio callback).
+        // Installs a new impulse response (1 <= length <= maxImpulseLength,
+        // as fixed by Prepare()). The same FIR is applied to every channel.
+        // Computes the filter's frequency-domain representation and publishes
+        // it atomically for Process() to pick up. Returns false if length is
+        // 0, exceeds maxImpulseLength, any tap is non-finite, or Prepare()
+        // hasn't been called successfully; in every failure case the
+        // previously installed filter is left untouched.
         bool SetImpulseResponse(const float* taps, uint32_t length) noexcept;
 
         // Non-RT. Installs an identity impulse ([1, 0, 0, ...]) -- pure
@@ -184,8 +192,21 @@ namespace DSP
         // Double-buffered filter spectrum (pre-scaled by 1/fftSize -- see
         // class comment). Same shape/size for every channel (mono FIR
         // applied uniformly), so only one copy is kept, not one per channel.
+        //
+        // Scope of the tear-freedom guarantee (same as Biquad::m_coeffs):
+        // one concurrent SetImpulseResponse() is safe because it writes the
+        // slot ProcessOneBlock() is not reading. Two of them inside a single
+        // ProcessOneBlock() call would reuse the slot the RT thread holds.
+        // Impulse responses change on explicit user action (an IPC set_fir),
+        // not continuously, so that is not a rate the control side reaches in
+        // practice. Closing it fully needs an RCU/hazard-pointer scheme;
+        // deliberately not done here.
         std::vector<Complex> m_filterSpectrum[2];
         std::atomic<uint32_t> m_activeFilter{0};
+
+        // Zero-padding scratch for SetImpulseResponse(), sized fftSize and
+        // allocated in Prepare() so that call path never allocates.
+        std::vector<float> m_padScratch;
 
         std::vector<ChannelState> m_channelStates;
 

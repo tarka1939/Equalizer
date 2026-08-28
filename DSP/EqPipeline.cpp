@@ -86,8 +86,28 @@ namespace DSP
 
     void EqPipeline::Process(const float* input, float* output, uint32_t frames, uint32_t channels) noexcept
     {
-        if (frames == 0 || channels == 0)
+        if (frames == 0 || channels == 0 || !input || !output)
             return;
+
+        if (m_channels != 0 && channels != m_channels)
+        {
+            // Channel count doesn't match what Prepare() was given. Previously
+            // this fell straight through to the stage dispatch below, where
+            // OverlapAdd::Process()'s own `channels != m_channels` guard made
+            // it return without writing anything -- leaving `output`
+            // untouched, i.e. holding whatever stale or uninitialised data the
+            // caller's buffer had. That is the one degenerate case in this
+            // class that did not degrade to passthrough like all the others.
+            // Make it consistent: pass through, so a mismatched call produces
+            // unfiltered audio rather than garbage.
+            if (output != input)
+            {
+                const uint32_t samples = frames * channels;
+                for (uint32_t i = 0; i < samples; ++i)
+                    output[i] = input[i];
+            }
+            return;
+        }
 
         if (m_channels == 0)
         {
