@@ -1,5 +1,4 @@
 ﻿#pragma once
-#include "kiss_fftr.h"  // if using real FFT
 #include <audioenginebaseapo.h>
 #include <audiopolicy.h>
 #include <cmath>
@@ -19,7 +18,12 @@ public:
     Equalizer();
 
     // IAudioProcessingObject
-    STDMETHODIMP GetLatency(HNSTIME* pTime) override { *pTime = 0; return S_OK; }
+    STDMETHODIMP GetLatency(HNSTIME* pTime) override
+    {
+        if (!pTime) return E_POINTER;
+        *pTime = 0;
+        return S_OK;
+    }
     STDMETHODIMP Reset() override { return S_OK; }
     STDMETHODIMP GetRegistrationProperties(APO_REG_PROPERTIES** ppRegProps) override;
     STDMETHODIMP Initialize(UINT32 cbDataSize, BYTE* pbyData) override { return S_OK; }
@@ -50,4 +54,14 @@ public:
 private:
     float m_gain = 0.0f; // 80% volume
     UINT32 m_channels = 0;
+
+    // Frame capacity of the locked connections (the smaller of the input and
+    // output descriptors' u32MaxFrameCount). APOProcess() clamps the caller's
+    // u32ValidFrameCount to this before writing.
+    UINT32 m_maxFrameCount = 0;
+
+    // Set by LockForProcess() only once the negotiated format has been
+    // verified as 32-bit float. APOProcess() reinterpret_casts the connection
+    // buffers as float*, so it must not run at all when this is false.
+    bool m_formatLocked = false;
 };

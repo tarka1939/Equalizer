@@ -76,10 +76,18 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
+      <!-- Match the C++17 standard the CMake build uses; see the same note in
+           Equalizer/Equalizer.vcxproj. This project compiles Equalizer.cpp and
+           ComExports.cpp, which pull in Diagnostics.h's inline variables. -->
+      <LanguageStandard>stdcpp17</LanguageStandard>
       <AdditionalIncludeDirectories>$(ProjectDir)..\kissfft-131.2.0</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
+      <!-- See the same note in Equalizer/Equalizer.vcxproj: this project also
+           compiles ComExports.cpp, so it needs runtimeobject.lib for WRL's
+           RoOriginateError reference. -->
+      <AdditionalDependencies>runtimeobject.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
   </ItemDefinitionGroup>
@@ -91,10 +99,18 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
+      <!-- Match the C++17 standard the CMake build uses; see the same note in
+           Equalizer/Equalizer.vcxproj. This project compiles Equalizer.cpp and
+           ComExports.cpp, which pull in Diagnostics.h's inline variables. -->
+      <LanguageStandard>stdcpp17</LanguageStandard>
       <AdditionalIncludeDirectories>$(ProjectDir)..\kissfft-131.2.0</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
+      <!-- See the same note in Equalizer/Equalizer.vcxproj: this project also
+           compiles ComExports.cpp, so it needs runtimeobject.lib for WRL's
+           RoOriginateError reference. -->
+      <AdditionalDependencies>runtimeobject.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
@@ -106,10 +122,18 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
+      <!-- Match the C++17 standard the CMake build uses; see the same note in
+           Equalizer/Equalizer.vcxproj. This project compiles Equalizer.cpp and
+           ComExports.cpp, which pull in Diagnostics.h's inline variables. -->
+      <LanguageStandard>stdcpp17</LanguageStandard>
       <AdditionalIncludeDirectories>$(ProjectDir)..\kissfft-131.2.0</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
+      <!-- See the same note in Equalizer/Equalizer.vcxproj: this project also
+           compiles ComExports.cpp, so it needs runtimeobject.lib for WRL's
+           RoOriginateError reference. -->
+      <AdditionalDependencies>runtimeobject.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
   </ItemDefinitionGroup>
@@ -121,10 +145,18 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
+      <!-- Match the C++17 standard the CMake build uses; see the same note in
+           Equalizer/Equalizer.vcxproj. This project compiles Equalizer.cpp and
+           ComExports.cpp, which pull in Diagnostics.h's inline variables. -->
+      <LanguageStandard>stdcpp17</LanguageStandard>
       <AdditionalIncludeDirectories>$(ProjectDir)..\kissfft-131.2.0</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
+      <!-- See the same note in Equalizer/Equalizer.vcxproj: this project also
+           compiles ComExports.cpp, so it needs runtimeobject.lib for WRL's
+           RoOriginateError reference. -->
+      <AdditionalDependencies>runtimeobject.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>

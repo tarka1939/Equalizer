@@ -76,9 +76,20 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
+      <!-- Match the C++17 standard the CMake build uses (root CMakeLists.txt
+           sets CMAKE_CXX_STANDARD 17). Without this, MSVC falls back to its
+           default (C++14) and Diagnostics.h fails to compile: "error C7525:
+           inline variables require at least '/std:c++17'". -->
+      <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
+      <!-- runtimeobject.lib supplies RoOriginateError, which WRL's
+           <wrl/module.h> references. ComExports.cpp needs that header for
+           Module<InProc>::GetObjectCount() in DllCanUnloadNow(); without this
+           the DLL fails to link with "LNK2001: unresolved external symbol
+           RoOriginateError". -->
+      <AdditionalDependencies>runtimeobject.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
   </ItemDefinitionGroup>
@@ -90,9 +101,20 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
+      <!-- Match the C++17 standard the CMake build uses (root CMakeLists.txt
+           sets CMAKE_CXX_STANDARD 17). Without this, MSVC falls back to its
+           default (C++14) and Diagnostics.h fails to compile: "error C7525:
+           inline variables require at least '/std:c++17'". -->
+      <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
+      <!-- runtimeobject.lib supplies RoOriginateError, which WRL's
+           <wrl/module.h> references. ComExports.cpp needs that header for
+           Module<InProc>::GetObjectCount() in DllCanUnloadNow(); without this
+           the DLL fails to link with "LNK2001: unresolved external symbol
+           RoOriginateError". -->
+      <AdditionalDependencies>runtimeobject.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
@@ -104,10 +126,21 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
+      <!-- Match the C++17 standard the CMake build uses (root CMakeLists.txt
+           sets CMAKE_CXX_STANDARD 17). Without this, MSVC falls back to its
+           default (C++14) and Diagnostics.h fails to compile: "error C7525:
+           inline variables require at least '/std:c++17'". -->
+      <LanguageStandard>stdcpp17</LanguageStandard>
       <AdditionalIncludeDirectories>$(ProjectDir)kissfft-131.2.0</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
+      <!-- runtimeobject.lib supplies RoOriginateError, which WRL's
+           <wrl/module.h> references. ComExports.cpp needs that header for
+           Module<InProc>::GetObjectCount() in DllCanUnloadNow(); without this
+           the DLL fails to link with "LNK2001: unresolved external symbol
+           RoOriginateError". -->
+      <AdditionalDependencies>runtimeobject.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
   </ItemDefinitionGroup>
@@ -119,10 +152,21 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
+      <!-- Match the C++17 standard the CMake build uses (root CMakeLists.txt
+           sets CMAKE_CXX_STANDARD 17). Without this, MSVC falls back to its
+           default (C++14) and Diagnostics.h fails to compile: "error C7525:
+           inline variables require at least '/std:c++17'". -->
+      <LanguageStandard>stdcpp17</LanguageStandard>
       <AdditionalIncludeDirectories>$(ProjectDir)kissfft-131.2.0</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
+      <!-- runtimeobject.lib supplies RoOriginateError, which WRL's
+           <wrl/module.h> references. ComExports.cpp needs that header for
+           Module<InProc>::GetObjectCount() in DllCanUnloadNow(); without this
+           the DLL fails to link with "LNK2001: unresolved external symbol
+           RoOriginateError". -->
+      <AdditionalDependencies>runtimeobject.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>

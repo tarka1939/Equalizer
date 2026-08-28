@@ -105,36 +105,59 @@ void ClassFactory_CreateInstance_ProducesAudioProcessingObjectRT() {
     factory->Release();
 }
 
-void DllCanUnloadNow_TracksLockServerRefCount() {
+void DllCanUnloadNow_TracksLocksAndLiveObjects() {
+    // DllCanUnloadNow() answers "are there outstanding locks *or* live
+    // objects", not just locks. It used to consult only the explicit
+    // LockServer() counter, so it reported "safe to unload" while the audio
+    // engine still held live Equalizer instances -- unloading under them is a
+    // crash in audiodg. It now also consults Module<InProc>::GetObjectCount(),
+    // which tracks the WRL RuntimeClass instances (both Equalizer and the
+    // class factory itself are RuntimeClass<ClassicCom>).
+    //
+    // This test previously asserted S_OK while still holding a factory
+    // reference, which is exactly the unsafe assumption the change removed.
+    // Verified against the real object count: it goes 0 -> 1 on
+    // DllGetClassObject, 1 -> 2 on CreateInstance, and back down to 0 on the
+    // matching Releases -- so the counter is balanced, not leaked.
+    CHECK(DllCanUnloadNow() == S_OK);  // nothing outstanding yet
+
     IClassFactory* factory = nullptr;
     HRESULT hr = DllGetClassObject(CLSID_Equalizer, __uuidof(IClassFactory), reinterpret_cast<void**>(&factory));
     CHECK(SUCCEEDED(hr) && factory != nullptr);
     if (!factory) return;
 
-    CHECK(DllCanUnloadNow() == S_OK);  // nothing locked yet (assuming no other test left a lock)
+    // The factory is itself a live RuntimeClass the caller holds a reference
+    // to, so the DLL is not unloadable while it is outstanding.
+    CHECK(DllCanUnloadNow() == S_FALSE);
 
     factory->LockServer(TRUE);
     CHECK(DllCanUnloadNow() == S_FALSE);
 
     factory->LockServer(FALSE);
-    CHECK(DllCanUnloadNow() == S_OK);
+    CHECK(DllCanUnloadNow() == S_FALSE);  // lock released, but factory still alive
 
     factory->Release();
+    CHECK(DllCanUnloadNow() == S_OK);     // now genuinely unloadable
 }
 
-void ApoProcess_AppliesGainThenClamps() {
+void ApoProcess_WithoutLockForProcessLeavesOutputUntouched() {
     // Builds real APO_CONNECTION_PROPERTY structures and calls APOProcess()
-    // directly, bypassing LockForProcess -- m_channels defaults to 0, which
-    // APOProcess resolves to 2 (see Equalizer.cpp).
+    // directly, bypassing LockForProcess.
     //
-    // NOTE: this exercises the *current* production default of m_gain ==
-    // 0.0f (see Equalizer.h's `float m_gain = 0.0f; // 80% volume`), which
-    // zeroes all output regardless of input. That looks like an unintended
-    // bug -- documented here via a passing test (so it's a real regression
-    // guard against further silent breakage), not silently fixed, since
-    // only test extraction was in scope for this pass. If m_gain's default
-    // is corrected to 0.8f, this assertion will need updating to
-    // CHECK_NEAR(v, 0.5f * 0.8f, ...) instead of CHECK(v == 0.0f).
+    // This test used to assert that APOProcess still wrote a full block (of
+    // silence, per m_gain's 0.0f default). APOProcess now refuses to touch
+    // the buffers at all unless LockForProcess has run and accepted the
+    // format -- it reports 0 valid frames and returns. That guard is the
+    // point: APOProcess reinterpret_casts pBuffer to float*, and without a
+    // validated format there is nothing establishing that the buffer really
+    // is float32. Writing into it on that assumption is what the guard
+    // prevents, so the correct expectation here is "output untouched", not
+    // "output zeroed".
+    //
+    // The separate m_gain == 0.0f issue (Equalizer.h: `float m_gain = 0.0f;
+    // // 80% volume`, ARCHITECTURE.md section 7.6) is unrelated to this path
+    // and still covered by ProcessBlock_ZeroGainProducesSilence in
+    // test_apo_dsp.cpp, which exercises the gain math directly.
     Equalizer eqObj;
 
     const UINT32 frames = 4;
@@ -157,9 +180,9 @@ void ApoProcess_AppliesGainThenClamps() {
 
     eqObj.APOProcess(1, &inPtr, 1, &outPtr);
 
-    CHECK(outConn.u32ValidFrameCount == frames);
+    CHECK(outConn.u32ValidFrameCount == 0);   // reported no frames produced
     for (float v : outBuf)
-        CHECK(v == 0.0f);  // current (likely unintended) default: silence
+        CHECK(v == -9.0f);                    // sentinel intact: never written
 }
 
 void ApoProcess_ZeroInputConnectionsIsNoOp() {
@@ -214,8 +237,8 @@ int main() {
     RUN_TEST(DllGetClassObject_KnownClsidSucceeds);
     RUN_TEST(ClassFactory_CreateInstance_RejectsAggregation);
     RUN_TEST(ClassFactory_CreateInstance_ProducesAudioProcessingObjectRT);
-    RUN_TEST(DllCanUnloadNow_TracksLockServerRefCount);
-    RUN_TEST(ApoProcess_AppliesGainThenClamps);
+    RUN_TEST(DllCanUnloadNow_TracksLocksAndLiveObjects);
+    RUN_TEST(ApoProcess_WithoutLockForProcessLeavesOutputUntouched);
     RUN_TEST(ApoProcess_ZeroInputConnectionsIsNoOp);
     RUN_TEST(ApoProcess_ZeroFrameCountSetsOutputFrameCountToZero);
 

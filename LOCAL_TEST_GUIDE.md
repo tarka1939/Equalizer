@@ -20,7 +20,23 @@ This guide is for testing the `Equalizer.dll` APO on a Windows machine with mini
 > - 64-bit Windows (Win10/Win11)
 > - You have built **Release x64** `Equalizer.dll`
 > - You will copy it to: `C:\driver\Equalizer.dll`
-> - APO CLSID: `{12345678-9ABC-4DEF-8011-223344556677}`
+> - APO CLSID: `{8E259F55-B32B-4FB8-8995-5965798B2C08}`
+
+> [!IMPORTANT]
+> **The APO CLSID changed.** It used to be the hand-typed placeholder
+> `{12345678-9ABC-4DEF-8011-223344556677}`. If you registered an earlier
+> build on this machine, unregister it with the **old** GUID *before*
+> installing a new one — otherwise the old `HKLM\SOFTWARE\Classes\CLSID\…`
+> and APO-catalog keys are orphaned and still point at the DLL. In an
+> elevated CMD:
+>
+> ```cmd
+> reg delete "HKLM\SOFTWARE\Classes\CLSID\{12345678-9ABC-4DEF-8011-223344556677}" /f
+> reg delete "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Audio\AudioEngine\AudioProcessingObjects\{12345678-9ABC-4DEF-8011-223344556677}" /f
+> ```
+>
+> Also clear any `FxProperties` values on your render endpoint that still
+> reference the old GUID (see the uninstall section below), then reboot.
 
 ---
 
@@ -32,7 +48,7 @@ Run in **elevated CMD**:
 mkdir C:\driver 2>NUL
 reg export "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render" "C:\driver\mmdevices_render_backup.reg" /y
 reg export "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Audio\AudioEngine\AudioProcessingObjects" "C:\driver\apo_catalog_backup.reg" /y
-reg export "HKLM\SOFTWARE\Classes\CLSID\{12345678-9ABC-4DEF-8011-223344556677}" "C:\driver\clsid_backup.reg" /y
+reg export "HKLM\SOFTWARE\Classes\CLSID\{8E259F55-B32B-4FB8-8995-5965798B2C08}" "C:\driver\clsid_backup.reg" /y
 ```
 
 Notes:
@@ -57,7 +73,7 @@ C:\Windows\System32\regsvr32.exe "C:\driver\Equalizer.dll"
 Run in **PowerShell (admin)**:
 
 ```powershell
-$clsid = "{12345678-9ABC-4DEF-8011-223344556677}"
+$clsid = "{8E259F55-B32B-4FB8-8995-5965798B2C08}"
 Get-ItemProperty "HKLM:\SOFTWARE\Classes\CLSID\$clsid\InprocServer32" | Select '(default)', ThreadingModel
 ```
 
@@ -69,7 +85,7 @@ Expected:
 Run in **PowerShell (admin)**:
 
 ```powershell
-$clsid = "{12345678-9ABC-4DEF-8011-223344556677}"
+$clsid = "{8E259F55-B32B-4FB8-8995-5965798B2C08}"
 Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Audio\AudioEngine\AudioProcessingObjects\$clsid" |
   Select FriendlyName, MajorVersion, MinorVersion, Flags
 ```
@@ -141,7 +157,7 @@ Expected: `nt authority\\system`
 In that SYSTEM window (replace endpoint GUID):
 
 ```powershell
-$clsid = "{12345678-9ABC-4DEF-8011-223344556677}"
+$clsid = "{8E259F55-B32B-4FB8-8995-5965798B2C08}"
 $ep = "{312a1cfb-cb49-4bbe-a050-6745dd210145}"
 $fx = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render\$ep\FxProperties"
 
@@ -152,7 +168,7 @@ Set-ItemProperty -Path $fx -Name "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},6" -Typ
 If PowerShell still reports access denied, try `reg.exe` instead (SYSTEM window):
 
 ```powershell
-$clsid = "{12345678-9ABC-4DEF-8011-223344556677}"
+$clsid = "{8E259F55-B32B-4FB8-8995-5965798B2C08}"
 reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render\{312a1cfb-cb49-4bbe-a050-6745dd210145}\FxProperties" /v "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},5" /t REG_SZ /d $clsid /f
 reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render\{312a1cfb-cb49-4bbe-a050-6745dd210145}\FxProperties" /v "{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},6" /t REG_SZ /d $clsid /f
 ```
