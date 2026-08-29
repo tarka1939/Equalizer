@@ -147,16 +147,10 @@ void Equalizer::APOProcess(
 
     const UINT32 channels = (m_channels != 0) ? m_channels : 2;
 
-    // NOTE: this s_eq is a distinct static local from the one in
-    // LockForProcess() below -- they do NOT share storage. The band gains
-    // configured in LockForProcess are never applied here; this instance is
-    // always in its default (unprepared/flat) state. That predates this
-    // refactor -- see ApoDsp::ProcessBlock's unit tests (Equalizer/tests/)
-    // for the isolated, correctly-wired behavior, and the project's tests
-    // README for details. Not fixed here since only extraction for
-    // testability was in scope, not behavior changes.
-    static DSP::Equalizer10Band s_eq;
-    const UINT32 written = ApoDsp::ProcessBlock(in, out, frameCount, channels, m_gain, s_eq);
+    // m_eq is the same instance LockForProcess() prepared and configured --
+    // see the note on its declaration in Equalizer.h for why this used to be
+    // a function-local static and what that broke.
+    const UINT32 written = ApoDsp::ProcessBlock(in, out, frameCount, channels, m_gain, m_eq);
 
     outConn->u32ValidFrameCount = written;
 }
@@ -185,7 +179,7 @@ HRESULT Equalizer::LockForProcess(UINT32 u32NumInputConnections, APO_CONNECTION_
 	UINT32 u32NumOutputConnections, APO_CONNECTION_DESCRIPTOR** ppOutputConnections)
 {
     Diagnostics::DebugLog(L"LockForProcess: entered");
-    Diagnostics::AppendFileLine(L"C:\\driver\\eq_apo.txt", L"LockForProcess: entered");
+    Diagnostics::AppendFileLine(Diagnostics::kDefaultLogPath, L"LockForProcess: entered");
 
     if (u32NumInputConnections != 1 || u32NumOutputConnections != 1)
         return APOERR_NUM_CONNECTIONS_INVALID;
@@ -226,12 +220,12 @@ HRESULT Equalizer::LockForProcess(UINT32 u32NumInputConnections, APO_CONNECTION_
         wchar_t buf[256]{};
         swprintf_s(buf, L"LockForProcess: sr=%lu ch=%hu bits=%hu", wf->nSamplesPerSec, wf->nChannels, wf->wBitsPerSample);
         Diagnostics::DebugLog(buf);
-        Diagnostics::AppendFileLine(L"C:\\driver\\eq_apo.txt", buf);
+        Diagnostics::AppendFileLine(Diagnostics::kDefaultLogPath, buf);
     }
 
-    // Prepare and set up the default 10-band curve.
-    static DSP::Equalizer10Band s_eq;
-    s_eq.Prepare(static_cast<float>(wf->nSamplesPerSec), static_cast<uint32_t>(wf->nChannels));
+    // Prepare and set up the default 10-band curve on the instance
+    // APOProcess() actually runs audio through.
+    m_eq.Prepare(static_cast<float>(wf->nSamplesPerSec), static_cast<uint32_t>(wf->nChannels));
 
     BandEqualizer bands;
     std::array<float, BandEqualizer::BandCount> centers{};
@@ -243,8 +237,8 @@ HRESULT Equalizer::LockForProcess(UINT32 u32NumInputConnections, APO_CONNECTION_
         gains[i] = b[i].gainDb;
     }
 
-    s_eq.SetBandsPeaking(centers, gains, 1.0f);
-    s_eq.Reset();
+    m_eq.SetBandsPeaking(centers, gains, 1.0f);
+    m_eq.Reset();
 
     return S_OK;
 }

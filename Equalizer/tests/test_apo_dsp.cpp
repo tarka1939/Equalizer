@@ -82,12 +82,13 @@ void ProcessBlock_GainIsAppliedBeforeClamping() {
 }
 
 void ProcessBlock_ZeroGainProducesSilence() {
-    // Documents the effect of Equalizer::m_gain's current default (0.0f,
-    // despite the "// 80% volume" comment next to its declaration in
-    // Equalizer.h) -- with gain == 0, every sample collapses to 0 regardless
-    // of input or EQ settings. This looks like a real bug in the production
-    // default; flagged here rather than silently changed, since only
-    // extraction for testability was in scope for this pass.
+    // Tests ProcessBlock's gain math directly: with gain == 0, every sample
+    // collapses to 0 regardless of input or EQ settings.
+    //
+    // This gain is passed in explicitly, so the test is unaffected by
+    // Equalizer::m_gain's default. That default used to be 0.0f (behind a
+    // "// 80% volume" comment), which made the shipped APO output silence;
+    // it is 1.0f now. See ARCHITECTURE.md section 7.6.
     DSP::Equalizer10Band eq;
     std::vector<float> in = { 0.9f, -0.9f, 0.5f };
     std::vector<float> out(in.size());

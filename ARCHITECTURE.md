@@ -608,7 +608,7 @@ Things worth knowing before trusting a claim about what this system does,
 found while writing tests and this document rather than assumed from the
 report.
 
-### 7.1 The Windows APO likely never applies the configured EQ curve (HIGH SEVERITY, unconfirmed on real hardware)
+### 7.1 The Windows APO never applied the configured EQ curve (FIXED)
 
 In `Equalizer/Equalizer.cpp`:
 
@@ -657,16 +657,24 @@ the curve-generation algorithm still be validated on real Windows hardware,
 by routing the generated curve through Equalizer APO instead of this
 project's own (currently non-functional) APO.
 
-**Still present, not fixed, now pinned by a test.** `APOProcess()` was
-refactored to call `ApoDsp::ProcessBlock()` (see §3) purely to make the
-gain/EQ/clamp math testable — the two-separate-`static`-locals structure was
-deliberately left exactly as-is, since only test extraction was in scope,
-not behavior changes. `Equalizer/tests/test_com_exports.cpp`
-(`ApoProcess_AppliesGainThenClamps`) now calls the real `APOProcess()`
-directly with a real `APO_CONNECTION_PROPERTY` and asserts the *current*
-output — silence, per §7.6 below — with a comment explaining why, so this
-won't silently regress further and the fix (if applied) has a test that will
-immediately tell the author to update its expected values.
+**Fixed.** The EQ is now a single member, `Equalizer::m_eq`, that
+`LockForProcess()` prepares and configures and `APOProcess()` runs audio
+through. That also closes a second latent bug the function-local `static`
+carried: a function-local static is shared by *every* `Equalizer` instance in
+the process, so two APO instances (per endpoint or per stream) would have
+shared one filter's coefficients and sample history.
+
+Verified on real code rather than by reading:
+`ApoProcess_AppliesTheCurveConfiguredByLockForProcess`
+(`Equalizer/tests/test_com_exports.cpp`) drives the real path — a minimal
+`IAudioMediaType` stub, `LockForProcess()` with a 48 kHz float32 format, then
+`APOProcess()` — and asserts the default `BandEqualizer` curve is audible: a
+62 Hz tone sits on a +3 dB band and must come out louder than it went in,
+while a 1 kHz tone sits on a 0 dB band and must come out at roughly unity.
+Against the pre-fix code all four of its assertions fail. Note the test can
+only distinguish "curve applied" from "passthrough" because the default curve
+is non-flat (a +5/+3/+2 dB "smiley"); if that default is ever flattened, this
+test stops discriminating and needs an explicit curve instead.
 
 ### 7.2 Windows IPC is a stub on both ends
 
@@ -701,25 +709,29 @@ against that schema, and there is no shared test asserting the two
 serializers stay compatible. A schema change in one place is not guaranteed
 to be caught by the other.
 
-### 7.6 `Equalizer::m_gain` defaults to `0.0f`, not the `80%` its comment claims
+### 7.6 `Equalizer::m_gain` defaulted to `0.0f`, not the `80%` its comment claimed (FIXED)
 
-`Equalizer.h`:
+`Equalizer.h` used to read:
 
 ```cpp
 float m_gain = 0.0f; // 80% volume
 ```
 
-The comment says `80%` (i.e. `0.8f`), but the field is initialized to
-`0.0f`. Combined with §7.1 (the EQ stage the `APOProcess` path actually runs
-is always an unconfigured passthrough), this means the shipped APO —
-*before* `LockForProcess` or any explicit gain-setting call — would multiply
-every sample by zero and output silence. There is currently no code path in
-this repo that sets `m_gain` to anything else. This is documented, not
-fixed, by `ProcessBlock_ZeroGainProducesSilence`
-(`Equalizer/tests/test_apo_dsp.cpp`) and `ApoProcess_AppliesGainThenClamps`
-(`Equalizer/tests/test_com_exports.cpp`, Windows-only) — both assert the
-current zero-output behavior explicitly, so changing the default to `0.8f`
-will make them fail loudly rather than pass silently.
+The comment said `80%` (i.e. `0.8f`) but the field was initialized to `0.0f`,
+and no code path in this repo ever assigned it. Combined with §7.1 (the EQ
+stage `APOProcess` actually ran was an unconfigured passthrough), the shipped
+APO multiplied every sample by zero and output silence.
+
+**Fixed: the default is now `1.0f`.** Unity, not `0.8f`. `0.8f` would match
+the old comment, but it would mean the APO silently attenuates by ~1.9 dB
+with no way for the user to see or change it; any level change belongs in the
+band curve or an explicit preamp. `ApoProcess_AppliesTheCurveConfiguredByLockForProcess`
+(§7.1) pins the audible result.
+
+`ProcessBlock_ZeroGainProducesSilence` (`Equalizer/tests/test_apo_dsp.cpp`)
+still exists and still passes — it passes `0.0f` to `ApoDsp::ProcessBlock()`
+explicitly, so it tests that function's gain math rather than the
+now-changed default.
 
 ---
 

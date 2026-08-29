@@ -117,19 +117,20 @@ This repo should be kept clean and current:
 
 ## What to avoid / gotchas
 
-- **The Windows APO likely never applies the configured EQ curve.** In
-  `Equalizer/Equalizer.cpp`, `LockForProcess()` and `APOProcess()` each
-  declare their own function-local `static DSP::Equalizer10Band s_eq;` —
-  these are two *separate* objects that happen to share a name, not a shared
-  instance. The one `LockForProcess()` configures with the real band curve
-  is never touched again; the one `APOProcess()` actually runs audio through
-  is never `Prepare()`'d, so it silently degrades to a passthrough copy. See
-  `ARCHITECTURE.md` §7.1 for the full writeup and `Equalizer/tests/test_apo_dsp.cpp`
-  / `test_com_exports.cpp` for tests that pin down (not fix) this behavior.
-- **`Equalizer::m_gain` defaults to `0.0f`, not the `80%` its own comment
-  claims** (`Equalizer.h`: `float m_gain = 0.0f; // 80% volume`). Combined
-  with the point above, the shipped APO would currently output silence
-  before any explicit gain-setting call exists. See `ARCHITECTURE.md` §7.6.
+- **FIXED — the APO's two-`s_eq` bug and zero default gain.** Historically
+  `LockForProcess()` and `APOProcess()` each declared their own function-local
+  `static DSP::Equalizer10Band s_eq;` — two *separate* objects sharing a name,
+  so the configured curve was never the one processing audio — and
+  `m_gain` defaulted to `0.0f` behind a `// 80% volume` comment, zeroing every
+  sample. The EQ is now a member (`Equalizer::m_eq`) and `m_gain` defaults to
+  `1.0f`. Keep it that way: **don't reintroduce a function-local `static` for
+  DSP state here.** Besides the two-object bug, a function-local static is
+  shared by every `Equalizer` instance in the process, and the audio engine
+  may instantiate the APO more than once. Pinned by
+  `ApoProcess_AppliesTheCurveConfiguredByLockForProcess` in
+  `Equalizer/tests/test_com_exports.cpp`, which drives the real
+  `LockForProcess()` → `APOProcess()` path and asserts the default curve's
+  +3 dB at 62 Hz is audible. `ARCHITECTURE.md` §7.1/§7.6 record the history.
 - **The WASAPI backend is a stub** (`daemon/wasapi_backend.h`) — `Open()`
   just logs and returns `false`; there is no real WASAPI capture/render
   code. Don't assume Windows daemon parity with the Linux/PipeWire path.

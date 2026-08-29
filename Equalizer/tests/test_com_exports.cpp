@@ -15,9 +15,10 @@
  *
  * Windows-only (COM, audioenginebaseapo.h) -- builds via
  * EqualizerComExportsTests.vcxproj, not the cross-platform CMake build.
- * This project could not be compiled or run in the environment that wrote
- * these tests (no Windows SDK available there) -- build and run this in
- * Visual Studio to confirm.
+ * An earlier version of this comment said the project could not be compiled
+ * or run here; that was wrong, and it is why several real breakages sat
+ * unnoticed. It builds and runs with MSVC (see CLAUDE.md for activating the
+ * toolchain).
  *
  * Deliberately NOT covered here: DllRegisterServer / DllUnregisterServer.
  * Both write to the real HKEY_LOCAL_MACHINE registration paths and require
@@ -31,6 +32,7 @@
  */
 #include "../Equalizer.h"
 
+#include <cmath>
 #include <cstdio>
 #include <vector>
 
@@ -145,8 +147,8 @@ void ApoProcess_WithoutLockForProcessLeavesOutputUntouched() {
     // directly, bypassing LockForProcess.
     //
     // This test used to assert that APOProcess still wrote a full block (of
-    // silence, per m_gain's 0.0f default). APOProcess now refuses to touch
-    // the buffers at all unless LockForProcess has run and accepted the
+    // silence, back when m_gain defaulted to 0.0f). APOProcess now refuses to
+    // touch the buffers at all unless LockForProcess has run and accepted the
     // format -- it reports 0 valid frames and returns. That guard is the
     // point: APOProcess reinterpret_casts pBuffer to float*, and without a
     // validated format there is nothing establishing that the buffer really
@@ -154,10 +156,8 @@ void ApoProcess_WithoutLockForProcessLeavesOutputUntouched() {
     // prevents, so the correct expectation here is "output untouched", not
     // "output zeroed".
     //
-    // The separate m_gain == 0.0f issue (Equalizer.h: `float m_gain = 0.0f;
-    // // 80% volume`, ARCHITECTURE.md section 7.6) is unrelated to this path
-    // and still covered by ProcessBlock_ZeroGainProducesSilence in
-    // test_apo_dsp.cpp, which exercises the gain math directly.
+    // The locked path -- where the curve actually gets applied -- is covered
+    // by ApoProcess_AppliesTheCurveConfiguredByLockForProcess below.
     Equalizer eqObj;
 
     const UINT32 frames = 4;
@@ -183,6 +183,132 @@ void ApoProcess_WithoutLockForProcessLeavesOutputUntouched() {
     CHECK(outConn.u32ValidFrameCount == 0);   // reported no frames produced
     for (float v : outBuf)
         CHECK(v == -9.0f);                    // sentinel intact: never written
+}
+
+// Minimal IAudioMediaType so LockForProcess() can be driven from a test.
+// Only GetAudioFormat() is ever called on this path; the rest satisfy the
+// vtable. Stack-allocated in the test, so the ref count is deliberately inert.
+class FakeMediaType final : public IAudioMediaType {
+public:
+    explicit FakeMediaType(WORD channels, DWORD sampleRate) {
+        m_fmt.wFormatTag      = WAVE_FORMAT_IEEE_FLOAT;
+        m_fmt.nChannels       = channels;
+        m_fmt.nSamplesPerSec  = sampleRate;
+        m_fmt.wBitsPerSample  = 32;
+        m_fmt.nBlockAlign     = static_cast<WORD>(channels * 4);
+        m_fmt.nAvgBytesPerSec = sampleRate * m_fmt.nBlockAlign;
+        m_fmt.cbSize          = 0;
+    }
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override {
+        if (!ppv) return E_POINTER;
+        if (IsEqualIID(riid, __uuidof(IUnknown)) || IsEqualIID(riid, __uuidof(IAudioMediaType))) {
+            *ppv = this;
+            return S_OK;
+        }
+        *ppv = nullptr;
+        return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override  { return 2; }
+    ULONG STDMETHODCALLTYPE Release() override { return 1; }
+
+    HRESULT STDMETHODCALLTYPE IsCompressedFormat(BOOL* pfCompressed) override {
+        if (pfCompressed) *pfCompressed = FALSE;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE IsEqual(IAudioMediaType*, DWORD* pdwFlags) override {
+        if (pdwFlags) *pdwFlags = 0;
+        return S_OK;
+    }
+    const WAVEFORMATEX* STDMETHODCALLTYPE GetAudioFormat() override { return &m_fmt; }
+    HRESULT STDMETHODCALLTYPE GetUncompressedAudioFormat(UNCOMPRESSEDAUDIOFORMAT*) override {
+        return E_NOTIMPL;
+    }
+
+private:
+    WAVEFORMATEX m_fmt{};
+};
+
+void ApoProcess_AppliesTheCurveConfiguredByLockForProcess() {
+    // The regression guard for ARCHITECTURE.md section 7.1 and 7.6.
+    //
+    // LockForProcess() and APOProcess() used to declare their own
+    // function-local `static DSP::Equalizer10Band s_eq` -- two separate
+    // objects sharing a name. The one configured with the band curve was
+    // never the one that processed audio, and the processing one was never
+    // Prepare()'d, so it degraded to a passthrough copy. Separately, m_gain
+    // defaulted to 0.0f, which zeroed every sample. Together those meant the
+    // shipped APO could not audibly apply its curve at all.
+    //
+    // This test drives the real path -- LockForProcess() with a real float32
+    // format, then APOProcess() -- and asserts the default curve is actually
+    // audible. BandEqualizer's default is a "smiley": +3 dB at 62 Hz, 0 dB at
+    // 1 kHz. So a 62 Hz tone must come out louder than it went in, while a
+    // 1 kHz tone must come out at roughly unity. Under the old code the 62 Hz
+    // case produced silence (m_gain == 0.0f), and with gain alone fixed it
+    // would produce unity -- so this distinguishes the curve actually being
+    // applied from both prior states.
+    const DWORD  sr       = 48000;
+    const WORD   channels = 1;
+    const UINT32 frames   = 4096;
+
+    FakeMediaType mediaType(channels, sr);
+
+    APO_CONNECTION_DESCRIPTOR inDesc{};
+    inDesc.Type             = APO_CONNECTION_BUFFER_TYPE_ALLOCATED;
+    inDesc.u32MaxFrameCount = frames;
+    inDesc.pFormat          = &mediaType;
+
+    APO_CONNECTION_DESCRIPTOR outDesc = inDesc;
+
+    APO_CONNECTION_DESCRIPTOR* inDescPtr  = &inDesc;
+    APO_CONNECTION_DESCRIPTOR* outDescPtr = &outDesc;
+
+    auto peakOf = [&](double toneHz) -> float {
+        Equalizer eqObj;
+        HRESULT hr = eqObj.LockForProcess(1, &inDescPtr, 1, &outDescPtr);
+        CHECK(SUCCEEDED(hr));
+        if (FAILED(hr)) return 0.0f;
+
+        std::vector<float> in(frames), out(frames, 0.0f);
+        for (UINT32 i = 0; i < frames; ++i)
+            in[i] = 0.25f * static_cast<float>(std::sin(2.0 * 3.14159265358979 * toneHz * i / sr));
+
+        APO_CONNECTION_PROPERTY inConn{};
+        inConn.pBuffer            = reinterpret_cast<UINT_PTR>(in.data());
+        inConn.u32ValidFrameCount = frames;
+        inConn.u32BufferFlags     = BUFFER_VALID;
+
+        APO_CONNECTION_PROPERTY outConn{};
+        outConn.pBuffer            = reinterpret_cast<UINT_PTR>(out.data());
+        outConn.u32ValidFrameCount = 0;
+        outConn.u32BufferFlags     = BUFFER_VALID;
+
+        APO_CONNECTION_PROPERTY* inPtr  = &inConn;
+        APO_CONNECTION_PROPERTY* outPtr = &outConn;
+        eqObj.APOProcess(1, &inPtr, 1, &outPtr);
+        CHECK(outConn.u32ValidFrameCount == frames);
+
+        // Skip the filter's settling transient before measuring.
+        float peak = 0.0f;
+        for (UINT32 i = frames / 2; i < frames; ++i)
+            peak = (std::fabs(out[i]) > peak) ? std::fabs(out[i]) : peak;
+        return peak;
+    };
+
+    const float bassPeak = peakOf(62.0);
+    const float midPeak  = peakOf(1000.0);
+
+    // Not silence -- this alone fails against the old m_gain == 0.0f default.
+    CHECK(bassPeak > 0.01f);
+    CHECK(midPeak  > 0.01f);
+
+    // 1 kHz sits on a 0 dB band, so it passes through at roughly unity.
+    CHECK(midPeak > 0.20f && midPeak < 0.30f);
+
+    // 62 Hz sits on a +3 dB band (~1.41x). Passthrough would leave it at
+    // 0.25, so requiring a clear boost is what pins the curve being applied.
+    CHECK(bassPeak > 0.30f);
 }
 
 void ApoProcess_ZeroInputConnectionsIsNoOp() {
@@ -239,6 +365,7 @@ int main() {
     RUN_TEST(ClassFactory_CreateInstance_ProducesAudioProcessingObjectRT);
     RUN_TEST(DllCanUnloadNow_TracksLocksAndLiveObjects);
     RUN_TEST(ApoProcess_WithoutLockForProcessLeavesOutputUntouched);
+    RUN_TEST(ApoProcess_AppliesTheCurveConfiguredByLockForProcess);
     RUN_TEST(ApoProcess_ZeroInputConnectionsIsNoOp);
     RUN_TEST(ApoProcess_ZeroFrameCountSetsOutputFrameCountToZero);
 

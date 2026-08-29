@@ -27,13 +27,27 @@
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
-    <ConfigurationType>Application</ConfigurationType>
+    <!-- DynamicLibrary, matching the x64 configurations. These two Win32
+         configurations were left on the "Console Application" template
+         default when the project became an APO, so they tried to link an
+         .exe and failed on "unresolved external symbol _main". Note a 32-bit
+         APO is not loadable by the audio engine on x64 Windows (audiodg.exe
+         is 64-bit), so this configuration builds but is not a shipping
+         target; x64 is. -->
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
     <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
-    <ConfigurationType>Application</ConfigurationType>
+    <!-- DynamicLibrary, matching the x64 configurations. These two Win32
+         configurations were left on the "Console Application" template
+         default when the project became an APO, so they tried to link an
+         .exe and failed on "unresolved external symbol _main". Note a 32-bit
+         APO is not loadable by the audio engine on x64 Windows (audiodg.exe
+         is 64-bit), so this configuration builds but is not a shipping
+         target; x64 is. -->
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
     <PlatformToolset>v143</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
