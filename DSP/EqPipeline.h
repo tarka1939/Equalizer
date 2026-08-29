@@ -87,16 +87,20 @@ namespace DSP
         // stage(s) are active or their configured coefficients/taps.
         void Reset() noexcept;
 
-        // Non-RT. Configures the IIR stage. IIR becomes active iff at least
-        // one entry of bandsGainDb is nonzero.
+        // Non-RT -- 10 x sin/cos/pow; call from a control thread, never from
+        // an audio callback. Configures the IIR stage. IIR becomes active iff
+        // at least one entry of bandsGainDb is nonzero. Safe to call
+        // concurrently with Process().
         void SetBandsPeaking(const std::array<float, Equalizer10Band::BandCount>& bandsCenterHz,
             const std::array<float, Equalizer10Band::BandCount>& bandsGainDb,
             float Q) noexcept;
 
-        // Non-RT. Installs a new FIR impulse response and marks FIR active.
-        // See OverlapAdd::SetImpulseResponse() for the length contract.
-        // Returns false (and leaves FIR's active/inactive state unchanged)
-        // if OverlapAdd rejects the taps.
+        // Non-RT -- runs a full FFT; call from a control thread, never from
+        // an audio callback. Installs a new FIR impulse response and marks
+        // FIR active. See OverlapAdd::SetImpulseResponse() for the length and
+        // finiteness contract. Returns false (and leaves FIR's
+        // active/inactive state unchanged) if OverlapAdd rejects the taps.
+        // Safe to call concurrently with Process().
         bool SetImpulseResponse(const float* taps, uint32_t length) noexcept;
 
         // Non-RT. Marks FIR inactive -- Process() stops calling into
@@ -106,6 +110,16 @@ namespace DSP
         void ClearImpulseResponse() noexcept;
 
         // RT-safe. See class comment for which stage(s) run.
+        // `channels` must equal the value given to Prepare(); a mismatch (or
+        // a null buffer, or an unprepared instance) degrades to a passthrough
+        // copy rather than leaving `output` unwritten.
+        //
+        // NOT safe to call concurrently with Prepare(), which reallocates
+        // OverlapAdd's buffers underneath it. The other configuration methods
+        // (SetBandsPeaking/SetImpulseResponse/ClearImpulseResponse) *are*
+        // safe to call concurrently -- they publish through atomics. Callers
+        // that can re-Prepare() on a format change must fence the RT thread
+        // off first; see daemon/pipewire_backend.cpp's Begin/EndReconfigure.
         void Process(const float* input, float* output, uint32_t frames, uint32_t channels) noexcept;
 
         bool IsFirActive() const noexcept { return m_firActive.load(std::memory_order_acquire); }

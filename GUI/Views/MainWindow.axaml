@@ -50,7 +50,11 @@
         <!-- ── EQ Curve Canvas (simple polyline visualiser) ─────────────── -->
         <Border Grid.Row="1" Background="#14142A" CornerRadius="8"
                 Margin="0,0,0,12" Padding="8">
-            <views:EqCurveView Bands="{Binding Bands}"/>
+            <!-- EqCurveView exposes UserBands (purple, the manual curve) and
+                 CalibrationBands (teal, CurveGen's output). There is no plain
+                 `Bands` property; binding to it failed XAML compilation, so
+                 the GUI did not build at all. -->
+            <views:EqCurveView UserBands="{Binding Bands}"/>
         </Border>
 
         <!-- ── 10-Band Sliders ───────────────────────────────────────────── -->

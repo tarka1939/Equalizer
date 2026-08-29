@@ -276,10 +276,26 @@ struct EqState {
 };
 ```
 
-Same double-buffer-and-flag pattern as `Biquad`'s coefficient swap, one level
-up: the IPC thread calls `SetGains()`, the audio callback polls
-`ConsumePending()` once per buffer and only re-configures the `Equalizer10Band`
-when something actually changed.
+**Who consumes this, and why it is not lock-free any more.** It used to be
+described as the same double-buffer-and-flag pattern as `Biquad`'s coefficient
+swap, with the *audio callback* polling `ConsumePending()` once per buffer.
+Two things were wrong with that:
+
+1. It was not a double buffer. There is one `pending_gains` array (and one
+   `pending_ir`), so a second `SetGains()` could overwrite it while the reader
+   was mid-copy -- a data race, not merely a stale read.
+2. Consuming on the RT thread meant the RT thread also had to *apply* the
+   result, and applying means `SetBandsPeaking()` (10x `sin`/`cos`/`pow`) or
+   `SetImpulseResponse()` (a heap allocation and a full FFT). Both are
+   documented non-RT. Every `set_fir` command allocated inside the audio
+   callback.
+
+So the consumer is now a dedicated **control thread** owned by the audio
+backend (`PipeWireBackend::ControlLoop`, section 5.1). The RT callback reads
+only the `enabled` and `preamp_db` atomics. With both ends of the handoff off
+the RT path, the pending arrays are guarded by an ordinary mutex, and the
+control thread blocks on `EqState::WaitForUpdate()` rather than polling.
+`ConsumePending*()`'s once-then-false semantics are unchanged.
 
 **A real seam worth knowing about** (covered explicitly by
 `EqState_SetGainsMarksDirtyAndStoresPending` in
@@ -332,22 +348,46 @@ compile time via `BACKEND_PIPEWIRE` / `BACKEND_WASAPI` / `BACKEND_COREAUDIO`
 (set by `daemon/CMakeLists.txt` based on `PLATFORM_LINUX` /
 `PLATFORM_WINDOWS` / `PLATFORM_MAC`).
 
-- **PipeWire (Linux) — implemented.** `pipewire_backend.cpp` registers a
-  PipeWire *filter* node with 2 input + 2 output ports, interleaves the
-  planar buffers PipeWire hands it, runs them through an
-  `Equalizer10Band`, applies preamp + `[-1,1]` clamp, and de-interleaves back
-  out. Gains are pulled from `EqState::ConsumePending()` once per RT
-  callback (`OnProcess`).
+- **PipeWire (Linux) — written, never compiled.** `pipewire_backend.cpp`
+  registers a PipeWire *filter* node with 2 input + 2 output ports,
+  interleaves the planar buffers PipeWire hands it, runs them through the
+  `EqPipeline` (FIR then IIR), applies preamp + a NaN-folding `[-1,1]` clamp,
+  and de-interleaves back out.
+
+  Threading is a three-way split: the RT callback (`OnProcess`) does audio and
+  nothing else; a **control thread** (`ControlLoop`) owns every non-RT DSP
+  call — `Prepare`, `SetBandsPeaking`, `SetImpulseResponse` — and is what
+  consumes `EqState`'s pending gains/IR; and `OnParamChanged` only records the
+  new sample rate, handing the re-`Prepare()` to the control thread so all
+  reconfiguration happens on one thread. Because `Prepare()` reallocates the
+  buffers `Process()` reads, it runs behind a `BeginReconfigure()` /
+  `EndReconfigure()` handshake (a Dekker pair of seq_cst flags) during which
+  the RT thread falls back to passthrough. Nothing else needs the handshake:
+  the other setters publish through the existing atomic slot swaps.
+
+  **Caveat — this file has never been built.** No development machine used on
+  this project has had `libpipewire-0.3-dev`. Reviewing it against the
+  PipeWire API found that both event callbacks had the wrong signatures
+  (`process` takes `(void*, struct spa_io_position*)`; `param_changed` takes
+  `(void*, void*, uint32_t, const struct spa_pod*)`) and that the RT path
+  mixed `pw_filter_get_dsp_buffer()` with the `pw_filter_dequeue_buffer()`
+  data layout. Those are corrected, but corrected by reading the API rather
+  than by compiling against it. Treat the PipeWire-facing code as unproven
+  until it is built and run on a Linux host.
 - **WASAPI (Windows) — declared but not implemented.** `wasapi_backend.h`
-  exists as a header; there is no corresponding `.cpp`, and
-  `daemon/CMakeLists.txt`'s Windows branch references
-  `wasapi_backend.cpp` as a source file that does not exist in the repo.
-  **The daemon does not currently build on Windows.** The header itself is
+  exists as a header with no corresponding `.cpp`. `daemon/CMakeLists.txt`'s
+  Windows branch used to list that non-existent `wasapi_backend.cpp` as a
+  source, so configuring failed outright; it now builds the header-only stub,
+  which links (`Open()` logs and returns `false`). The header itself is
   a stub (`Open()` logs and returns `false`) with no real Win32/WASAPI calls
   in it, which is exactly what makes `daemon/tests/test_wasapi_backend.cpp`
   able to build and run cross-platform right now — see §9.
-- **CoreAudio (macOS) — same situation**: header/CMake wiring exists,
-  implementation doesn't.
+- **CoreAudio (macOS) — not present at all**: neither
+  `coreaudio_backend.cpp` nor `.h` exists. The CMake branch that referenced
+  them (and the fallback branch referencing an equally absent
+  `stub_backend.cpp`) now skips the `eq-daemon` target with an explanatory
+  message instead of failing at configure time. The DSP and IPC unit tests
+  still build and run on those platforms.
 
 So today, `eq-daemon` is a Linux-only, PipeWire-only binary in practice,
 despite the CMake scaffolding for three platforms.
@@ -568,7 +608,7 @@ Things worth knowing before trusting a claim about what this system does,
 found while writing tests and this document rather than assumed from the
 report.
 
-### 7.1 The Windows APO likely never applies the configured EQ curve (HIGH SEVERITY, unconfirmed on real hardware)
+### 7.1 The Windows APO never applied the configured EQ curve (FIXED)
 
 In `Equalizer/Equalizer.cpp`:
 
@@ -617,16 +657,35 @@ the curve-generation algorithm still be validated on real Windows hardware,
 by routing the generated curve through Equalizer APO instead of this
 project's own (currently non-functional) APO.
 
-**Still present, not fixed, now pinned by a test.** `APOProcess()` was
-refactored to call `ApoDsp::ProcessBlock()` (see §3) purely to make the
-gain/EQ/clamp math testable — the two-separate-`static`-locals structure was
-deliberately left exactly as-is, since only test extraction was in scope,
-not behavior changes. `Equalizer/tests/test_com_exports.cpp`
-(`ApoProcess_AppliesGainThenClamps`) now calls the real `APOProcess()`
-directly with a real `APO_CONNECTION_PROPERTY` and asserts the *current*
-output — silence, per §7.6 below — with a comment explaining why, so this
-won't silently regress further and the fix (if applied) has a test that will
-immediately tell the author to update its expected values.
+**Fixed.** The EQ is now a single member, `Equalizer::m_eq`, that
+`LockForProcess()` prepares and configures and `APOProcess()` runs audio
+through. A function-local static was also process-wide shared state across
+every `Equalizer` instance; that is latent rather than active today, since
+`GetRegistrationProperties()` reports `u32MaxInstances = 1`, but a member is
+the right shape regardless.
+
+One constraint this introduces, documented on the member's declaration:
+`m_eq.Prepare()` resizes each `Biquad`'s per-channel state vector, so it
+reallocates buffers `APOProcess()` reads. That is safe only because the APO
+contract confines `APOProcess()` to between `LockForProcess()` and
+`UnlockForProcess()` -- the same contract that already lets `m_channels` /
+`m_maxFrameCount` / `m_formatLocked` cross those calls unsynchronised. The
+constraint did not exist while the two statics were separate objects, so an
+on-the-fly reconfiguration path added here would need the RT callback fenced
+off first (see §4.1 and `daemon/pipewire_backend.cpp`'s
+`BeginReconfigure`/`EndReconfigure`).
+
+Verified on real code rather than by reading:
+`ApoProcess_AppliesTheCurveConfiguredByLockForProcess`
+(`Equalizer/tests/test_com_exports.cpp`) drives the real path — a minimal
+`IAudioMediaType` stub, `LockForProcess()` with a 48 kHz float32 format, then
+`APOProcess()` — and asserts the default `BandEqualizer` curve is audible: a
+62 Hz tone sits on a +3 dB band and must come out louder than it went in,
+while a 1 kHz tone sits on a 0 dB band and must come out at roughly unity.
+Against the pre-fix code all four of its assertions fail. Note the test can
+only distinguish "curve applied" from "passthrough" because the default curve
+is non-flat (a +5/+3/+2 dB "smiley"); if that default is ever flattened, this
+test stops discriminating and needs an explicit curve instead.
 
 ### 7.2 Windows IPC is a stub on both ends
 
@@ -661,25 +720,29 @@ against that schema, and there is no shared test asserting the two
 serializers stay compatible. A schema change in one place is not guaranteed
 to be caught by the other.
 
-### 7.6 `Equalizer::m_gain` defaults to `0.0f`, not the `80%` its comment claims
+### 7.6 `Equalizer::m_gain` defaulted to `0.0f`, not the `80%` its comment claimed (FIXED)
 
-`Equalizer.h`:
+`Equalizer.h` used to read:
 
 ```cpp
 float m_gain = 0.0f; // 80% volume
 ```
 
-The comment says `80%` (i.e. `0.8f`), but the field is initialized to
-`0.0f`. Combined with §7.1 (the EQ stage the `APOProcess` path actually runs
-is always an unconfigured passthrough), this means the shipped APO —
-*before* `LockForProcess` or any explicit gain-setting call — would multiply
-every sample by zero and output silence. There is currently no code path in
-this repo that sets `m_gain` to anything else. This is documented, not
-fixed, by `ProcessBlock_ZeroGainProducesSilence`
-(`Equalizer/tests/test_apo_dsp.cpp`) and `ApoProcess_AppliesGainThenClamps`
-(`Equalizer/tests/test_com_exports.cpp`, Windows-only) — both assert the
-current zero-output behavior explicitly, so changing the default to `0.8f`
-will make them fail loudly rather than pass silently.
+The comment said `80%` (i.e. `0.8f`) but the field was initialized to `0.0f`,
+and no code path in this repo ever assigned it. Combined with §7.1 (the EQ
+stage `APOProcess` actually ran was an unconfigured passthrough), the shipped
+APO multiplied every sample by zero and output silence.
+
+**Fixed: the default is now `1.0f`.** Unity, not `0.8f`. `0.8f` would match
+the old comment, but it would mean the APO silently attenuates by ~1.9 dB
+with no way for the user to see or change it; any level change belongs in the
+band curve or an explicit preamp. `ApoProcess_AppliesTheCurveConfiguredByLockForProcess`
+(§7.1) pins the audible result.
+
+`ProcessBlock_ZeroGainProducesSilence` (`Equalizer/tests/test_apo_dsp.cpp`)
+still exists and still passes — it passes `0.0f` to `ApoDsp::ProcessBlock()`
+explicitly, so it tests that function's gain math rather than the
+now-changed default.
 
 ---
 

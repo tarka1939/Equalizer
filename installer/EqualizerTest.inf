@@ -40,8 +40,8 @@ Equalizer.dll
 ; {d04e05a6-594b-4fb6-a80d-01af5eed7d1d},5 = PKEY_FX_StreamEffectClsid
 ; {d04e05a6-594b-4fb6-a80d-01af5eed7d1d},6 = PKEY_FX_ModeEffectClsid
 [AddReg.EndpointFx]
-HKLM,"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render\{312a1cfb-cb49-4bbe-a050-6745dd210145}\FxProperties","{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},5",0x00000000,"{12345678-9ABC-4DEF-8011-223344556677}"
-HKLM,"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render\{312a1cfb-cb49-4bbe-a050-6745dd210145}\FxProperties","{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},6",0x00000000,"{12345678-9ABC-4DEF-8011-223344556677}"
+HKLM,"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render\{312a1cfb-cb49-4bbe-a050-6745dd210145}\FxProperties","{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},5",0x00000000,"{8E259F55-B32B-4FB8-8995-5965798B2C08}"
+HKLM,"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render\{312a1cfb-cb49-4bbe-a050-6745dd210145}\FxProperties","{d04e05a6-594b-4fb6-a80d-01af5eed7d1d},6",0x00000000,"{8E259F55-B32B-4FB8-8995-5965798B2C08}"
 
 ; --------------------
 ; Uninstall

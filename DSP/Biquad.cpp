@@ -4,6 +4,27 @@
 
 using namespace DSP;
 
+namespace
+{
+    // Local Pi constant rather than <cmath>'s M_PI: M_PI is a POSIX
+    // extension, not standard C++, and MSVC only defines it when
+    // _USE_MATH_DEFINES is set before <cmath> is included. Depending on that
+    // made this file fail to compile under MSVC (the CMake `dsp` target
+    // builds on Windows too), so the constant is spelled out here instead.
+    constexpr float kPi = 3.14159265358979323846f;
+
+    // A non-finite coefficient poisons a Direct Form I biquad permanently:
+    // the NaN lands in the y1/y2 history and every subsequent output stays
+    // NaN even after valid coefficients are installed. Guard at the
+    // publishing boundary so bad input (e.g. a NaN gain arriving over IPC)
+    // degrades to "this band does nothing" instead of killing the stream.
+    bool IsFinite(const Biquad::Coeffs& c) noexcept
+    {
+        return std::isfinite(c.b0) && std::isfinite(c.b1) && std::isfinite(c.b2)
+            && std::isfinite(c.a1) && std::isfinite(c.a2);
+    }
+}
+
 Biquad::Biquad() noexcept
     : m_sampleRate(48000.0f)
     , m_channels(0)
@@ -28,6 +49,10 @@ void Biquad::Prepare(float sampleRate, uint32_t channels) noexcept
 
 void Biquad::SetCoefficients(const Coeffs& c) noexcept
 {
+    // Reject non-finite coefficients outright rather than publishing them.
+    if (!IsFinite(c))
+        return;
+
     // write to the inactive slot then switch atomically
     uint32_t inactive = (m_activeIndex.load(std::memory_order_relaxed) ^ 1u);
     m_coeffs[inactive] = c;
@@ -39,11 +64,29 @@ void Biquad::SetPeaking(float centerHz, float Q, float gainDb) noexcept
 {
     // Use RBJ cookbook peaking EQ formula
     const float sr = m_sampleRate > 0.0f ? m_sampleRate : 48000.0f;
-    const float omega = 2.0f * static_cast<float>(M_PI) * centerHz / sr;
+
+    // Clamp the design parameters before they reach the trig/pow calls.
+    // Callers reach this directly (Equalizer10Band only guards Q), and the
+    // values can originate from untrusted input -- ipc_server.cpp's
+    // set_bands hands through whatever the client sent. Out-of-range
+    // inputs otherwise produce garbage or non-finite coefficients:
+    //   - centerHz at or above Nyquist aliases the peak to a bogus place;
+    //   - centerHz <= 0 gives a degenerate omega;
+    //   - Q <= 0 makes alpha infinite;
+    //   - a non-finite gainDb propagates straight through A.
+    if (!std::isfinite(centerHz) || !std::isfinite(Q) || !std::isfinite(gainDb))
+        return;
+
+    const float nyquist = sr * 0.5f;
+    const float fc = centerHz < 1.0f ? 1.0f
+                   : (centerHz > nyquist * 0.99f ? nyquist * 0.99f : centerHz);
+    const float q = Q > 0.001f ? Q : 0.001f;
+
+    const float omega = 2.0f * kPi * fc / sr;
     const float sinw = std::sin(omega);
     const float cosw = std::cos(omega);
     const float A = std::pow(10.0f, gainDb / 40.0f); // sqrt of power
-    const float alpha = sinw / (2.0f * Q);
+    const float alpha = sinw / (2.0f * q);
 
     float b0 = 1.0f + alpha * A;
     float b1 = -2.0f * cosw;
@@ -73,7 +116,7 @@ void Biquad::Reset() noexcept
 
 void Biquad::Process(const float* input, float* output, uint32_t frames, uint32_t channels) noexcept
 {
-    if (frames == 0 || channels == 0 || m_channels == 0)
+    if (frames == 0 || channels == 0 || m_channels == 0 || !input || !output)
         return;
 
     // read active coeffs once (atomic load)

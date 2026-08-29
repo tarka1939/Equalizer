@@ -175,6 +175,61 @@ class TestLoadImpulseResponse:
         assert abs(freqs_l[np.argmax(mag_l)] - 300) < 5.0
         assert abs(freqs_r[np.argmax(mag_r)] - 6000) < 5.0
 
+    @pytest.mark.parametrize("peak_offset", [0, 48, 480, 4800, 8192])
+    def test_recovers_known_response_wherever_the_peak_sits(self, tmp_path, peak_offset):
+        """
+        Feed a real impulse response (not a sine) whose magnitude response is
+        known in closed form, and check the recovered curve matches it.
+
+        The other tests in this class all pass a *sine wave* to an
+        impulse-response loader. A long sine has energy spread over the whole
+        file, so the full-length Hann window applied here barely perturbs it
+        and `argmax(mag_db)` still lands on the right frequency -- which is
+        why they stayed green while the loader was mangling actual IRs. The
+        window is zero at index 0 and one at the centre, so an IR whose peak
+        sits near the start of the file (the normal case for an export) had
+        its direct sound windowed away. Parametrised over peak position
+        because the error was a smooth function of it: ~13.7 dB at offset 0,
+        fading to nothing only once the peak reached mid-file, so a single
+        fixed offset can pass while the loader is badly wrong elsewhere.
+        """
+        sr = 48000
+        n = 16384
+        fc, q, gain_db = 125.0, 1.0, 8.0
+
+        # RBJ peaking biquad -- same shape as DSP::Biquad / Equalizer APO "PK".
+        A = 10.0 ** (gain_db / 40.0)
+        w0 = 2.0 * np.pi * fc / sr
+        alpha = np.sin(w0) / (2.0 * q)
+        cos_w0 = np.cos(w0)
+        b = np.array([1 + alpha * A, -2 * cos_w0, 1 - alpha * A])
+        a = np.array([1 + alpha / A, -2 * cos_w0, 1 - alpha / A])
+        b, a = b / a[0], a / a[0]
+
+        from scipy.signal import freqz, lfilter
+
+        impulse = np.zeros(n, dtype=np.float64)
+        impulse[0] = 1.0
+        ir = lfilter(b, a, impulse)
+        ir = np.concatenate([np.zeros(peak_offset), ir])[:n]
+
+        path = tmp_path / f"ir_{peak_offset}.wav"
+        _write_wav(path, sr, ir.astype(np.float32))
+
+        freqs, mag_db, _ = measurement.load_impulse_response(str(path))
+
+        # Compare to the analytic response, both referenced to 1 kHz so the
+        # arbitrary absolute scale of either side cancels out.
+        probe = np.array([fc, 1000.0])
+        _, h = freqz(b, a, worN=2.0 * np.pi * probe / sr)
+        expected = 20.0 * np.log10(np.abs(h))
+        expected = expected[0] - expected[1]
+
+        measured = np.interp(probe, freqs, mag_db)
+        measured = measured[0] - measured[1]
+
+        assert measured == pytest.approx(expected, abs=0.5)
+
 
 # ── smooth_octave ─────────────────────────────────────────────────────────────
 

@@ -1,4 +1,5 @@
 #include "Equalizer.h"
+#include "Diagnostics.h"
 #include "RegistryUtil.h"
 
 #include <windows.h>
@@ -6,6 +7,7 @@
 #include <objbase.h>
 #include <strsafe.h>
 #include <wrl.h>
+#include <wrl/module.h>
 
 using namespace Microsoft::WRL;
 
@@ -20,7 +22,10 @@ namespace
     constexpr wchar_t kApoCatalogKeyPrefix[] =
         L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Audio\\AudioEngine\\AudioProcessingObjects";
 
-    long g_moduleRefCount = 0;
+    // Explicit LockServer() holds only. Live object instances are counted
+    // separately by WRL's module (see DllCanUnloadNow) -- this counter alone
+    // is NOT sufficient to answer that question.
+    volatile long g_serverLocks = 0;
 
     HMODULE GetThisModule() noexcept
     {
@@ -95,9 +100,9 @@ namespace
         STDMETHODIMP LockServer(BOOL fLock) override
         {
             if (fLock)
-                InterlockedIncrement(&g_moduleRefCount);
+                InterlockedIncrement(&g_serverLocks);
             else
-                InterlockedDecrement(&g_moduleRefCount);
+                InterlockedDecrement(&g_serverLocks);
             return S_OK;
         }
     };
@@ -112,27 +117,15 @@ STDAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, void** ppv)
     if (rclsid != CLSID_Equalizer)
         return CLASS_E_CLASSNOTAVAILABLE;
 
-    // Trace COM activation attempts.
-    {
-        wchar_t buf[128]{};
-        StringCchPrintfW(buf, _countof(buf), L"DllGetClassObject: requested");
-        OutputDebugStringW(L"[EqualizerAPO] ");
-        OutputDebugStringW(buf);
-        OutputDebugStringW(L"\r\n");
-
-        // Avoid including Diagnostics.h here; keep it self-contained.
-        HANDLE h = CreateFileW(L"C:\\driver\\eq_apo.txt", FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
-            nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (h != INVALID_HANDLE_VALUE)
-        {
-            SetFilePointer(h, 0, nullptr, FILE_END);
-            wchar_t line[256]{};
-            wsprintfW(line, L"%lu %s\r\n", GetCurrentProcessId(), buf);
-            DWORD bytes = 0;
-            WriteFile(h, line, static_cast<DWORD>(lstrlenW(line) * sizeof(wchar_t)), &bytes, nullptr);
-            CloseHandle(h);
-        }
-    }
+    // Trace COM activation attempts. This used to open and append to a
+    // hardcoded C:\driver\eq_apo.txt on *every* activation, from inside
+    // audiodg.exe -- a protected, restricted-token process where that path is
+    // neither writable nor appropriate, and where per-activation file I/O is
+    // not something a shipping build should be doing. Diagnostics::DebugLog
+    // goes to the debugger only; the file sink is opt-in at build time (see
+    // Diagnostics.h) and off by default.
+    Diagnostics::DebugLog(L"DllGetClassObject: requested");
+    Diagnostics::AppendFileLine(Diagnostics::kDefaultLogPath, L"DllGetClassObject: requested");
 
     auto factory = Make<EqualizerClassFactory>();
     if (!factory)
@@ -143,7 +136,16 @@ STDAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, void** ppv)
 
 STDAPI DllCanUnloadNow(void)
 {
-    return (g_moduleRefCount == 0) ? S_OK : S_FALSE;
+    // Both conditions matter. This used to consult g_moduleRefCount alone,
+    // which only ever counted explicit IClassFactory::LockServer() holds --
+    // objects handed out by CreateInstance() never touched it. So the DLL
+    // reported "safe to unload" while the audio engine still held live
+    // Equalizer instances, and unloading under them is a crash in audiodg.
+    // Module<>::GetObjectCount() is what tracks the RuntimeClass instances.
+    if (InterlockedCompareExchange(&g_serverLocks, 0, 0) != 0)
+        return S_FALSE;
+
+    return (Module<InProc>::GetModule().GetObjectCount() == 0) ? S_OK : S_FALSE;
 }
 
 STDAPI DllRegisterServer(void)
@@ -164,18 +166,28 @@ STDAPI DllRegisterServer(void)
     hr = StringCchPrintfW(inprocKey, _countof(inprocKey), L"%s\\InprocServer32", clsidKey);
     if (FAILED(hr)) return hr;
 
+    // Roll back on any failure. Registration writes several keys across two
+    // hives-worth of locations; bailing out midway used to leave a partially
+    // registered CLSID behind -- enough for COM to try to activate the APO
+    // but not enough for it to work, and with no obvious way to clean up.
+    auto rollback = [&](HRESULT failure) -> HRESULT {
+        (void)UnregisterAsAudioProcessingObject(clsidStr);
+        (void)RegistryUtil::DeleteTree(HKEY_LOCAL_MACHINE, clsidKey);
+        return failure;
+    };
+
     hr = RegistryUtil::SetStringValue(HKEY_LOCAL_MACHINE, clsidKey, nullptr, L"Equalizer");
-    if (FAILED(hr)) return hr;
+    if (FAILED(hr)) return rollback(hr);
 
     hr = RegistryUtil::SetStringValue(HKEY_LOCAL_MACHINE, inprocKey, nullptr, modulePath);
-    if (FAILED(hr)) return hr;
+    if (FAILED(hr)) return rollback(hr);
 
     hr = RegistryUtil::SetStringValue(HKEY_LOCAL_MACHINE, inprocKey, L"ThreadingModel", L"Both");
-    if (FAILED(hr)) return hr;
+    if (FAILED(hr)) return rollback(hr);
 
     // Register under Audio Engine APO catalog.
     hr = RegisterAsAudioProcessingObject(clsidStr);
-    if (FAILED(hr)) return hr;
+    if (FAILED(hr)) return rollback(hr);
 
     return S_OK;
 }

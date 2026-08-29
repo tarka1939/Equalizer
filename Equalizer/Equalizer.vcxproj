@@ -27,13 +27,27 @@
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
-    <ConfigurationType>Application</ConfigurationType>
+    <!-- DynamicLibrary, matching the x64 configurations. These two Win32
+         configurations were left on the "Console Application" template
+         default when the project became an APO, so they tried to link an
+         .exe and failed on "unresolved external symbol _main". Note a 32-bit
+         APO is not loadable by the audio engine on x64 Windows (audiodg.exe
+         is 64-bit), so this configuration builds but is not a shipping
+         target; x64 is. -->
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
     <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
-    <ConfigurationType>Application</ConfigurationType>
+    <!-- DynamicLibrary, matching the x64 configurations. These two Win32
+         configurations were left on the "Console Application" template
+         default when the project became an APO, so they tried to link an
+         .exe and failed on "unresolved external symbol _main". Note a 32-bit
+         APO is not loadable by the audio engine on x64 Windows (audiodg.exe
+         is 64-bit), so this configuration builds but is not a shipping
+         target; x64 is. -->
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
     <PlatformToolset>v143</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
@@ -76,9 +90,20 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
+      <!-- Match the C++17 standard the CMake build uses (root CMakeLists.txt
+           sets CMAKE_CXX_STANDARD 17). Without this, MSVC falls back to its
+           default (C++14) and Diagnostics.h fails to compile: "error C7525:
+           inline variables require at least '/std:c++17'". -->
+      <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
+      <!-- runtimeobject.lib supplies RoOriginateError, which WRL's
+           <wrl/module.h> references. ComExports.cpp needs that header for
+           Module<InProc>::GetObjectCount() in DllCanUnloadNow(); without this
+           the DLL fails to link with "LNK2001: unresolved external symbol
+           RoOriginateError". -->
+      <AdditionalDependencies>runtimeobject.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
   </ItemDefinitionGroup>
@@ -90,9 +115,20 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
+      <!-- Match the C++17 standard the CMake build uses (root CMakeLists.txt
+           sets CMAKE_CXX_STANDARD 17). Without this, MSVC falls back to its
+           default (C++14) and Diagnostics.h fails to compile: "error C7525:
+           inline variables require at least '/std:c++17'". -->
+      <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
+      <!-- runtimeobject.lib supplies RoOriginateError, which WRL's
+           <wrl/module.h> references. ComExports.cpp needs that header for
+           Module<InProc>::GetObjectCount() in DllCanUnloadNow(); without this
+           the DLL fails to link with "LNK2001: unresolved external symbol
+           RoOriginateError". -->
+      <AdditionalDependencies>runtimeobject.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
@@ -104,10 +140,21 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
+      <!-- Match the C++17 standard the CMake build uses (root CMakeLists.txt
+           sets CMAKE_CXX_STANDARD 17). Without this, MSVC falls back to its
+           default (C++14) and Diagnostics.h fails to compile: "error C7525:
+           inline variables require at least '/std:c++17'". -->
+      <LanguageStandard>stdcpp17</LanguageStandard>
       <AdditionalIncludeDirectories>$(ProjectDir)kissfft-131.2.0</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
+      <!-- runtimeobject.lib supplies RoOriginateError, which WRL's
+           <wrl/module.h> references. ComExports.cpp needs that header for
+           Module<InProc>::GetObjectCount() in DllCanUnloadNow(); without this
+           the DLL fails to link with "LNK2001: unresolved external symbol
+           RoOriginateError". -->
+      <AdditionalDependencies>runtimeobject.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
   </ItemDefinitionGroup>
@@ -119,10 +166,21 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
+      <!-- Match the C++17 standard the CMake build uses (root CMakeLists.txt
+           sets CMAKE_CXX_STANDARD 17). Without this, MSVC falls back to its
+           default (C++14) and Diagnostics.h fails to compile: "error C7525:
+           inline variables require at least '/std:c++17'". -->
+      <LanguageStandard>stdcpp17</LanguageStandard>
       <AdditionalIncludeDirectories>$(ProjectDir)kissfft-131.2.0</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
+      <!-- runtimeobject.lib supplies RoOriginateError, which WRL's
+           <wrl/module.h> references. ComExports.cpp needs that header for
+           Module<InProc>::GetObjectCount() in DllCanUnloadNow(); without this
+           the DLL fails to link with "LNK2001: unresolved external symbol
+           RoOriginateError". -->
+      <AdditionalDependencies>runtimeobject.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
@@ -136,7 +194,6 @@
     <ClCompile Include="ComExports.cpp" />
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="Equalizer.cpp" />
-    <ClCompile Include="Equalizer.h" />
     <ClCompile Include="RegistryUtil.cpp" />
     <ClCompile Include="kissfft-131.2.0\kiss_fft.c" />
     <ClCompile Include="kissfft-131.2.0\kiss_fftr.c" />
@@ -151,6 +208,14 @@
     <ClInclude Include="ApoDsp.h" />
     <ClInclude Include="BandEqualizer.h" />
     <ClInclude Include="Diagnostics.h" />
+    <!-- ClInclude, not ClCompile. Listed as a source, this header was handed
+         to cl.exe as a /TP translation unit, producing an "Equalizer.obj"
+         that collided with the real one from Equalizer.cpp in the same /Fo
+         directory. Whichever was written last won, so the DLL link failed
+         intermittently with "unresolved external symbol CLSID_Equalizer"
+         (and Equalizer's constructor, and GetRegistrationProperties) whenever
+         the header's essentially-empty object won the race. -->
+    <ClInclude Include="Equalizer.h" />
     <ClInclude Include="RegistryUtil.h" />
     <ClInclude Include="kissfft-131.2.0\kiss_fft.h" />
     <ClInclude Include="kissfft-131.2.0\kiss_fftr.h" />

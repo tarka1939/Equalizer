@@ -225,7 +225,12 @@ public sealed class MainViewModel : ReactiveObject, IDisposable
         var inputPath  = files[0].TryGetLocalPath();
         if (inputPath is null) return;
 
-        var outputPath = Path.Combine(Path.GetTempPath(), "eq_curve.json");
+        // Private per-run directory rather than a fixed name in the shared
+        // temp dir. "{tmp}/eq_curve.json" is world-predictable: on Linux any
+        // local account could pre-create or symlink that path and have this
+        // process deserialise, or write through, whatever they chose.
+        var workDir = Directory.CreateTempSubdirectory("eq-curvegen-").FullName;
+        var outputPath = Path.Combine(workDir, "eq_curve.json");
         StatusText = "Running CurveGen…";
 
         try
@@ -240,7 +245,16 @@ public sealed class MainViewModel : ReactiveObject, IDisposable
             };
 
             using var proc = System.Diagnostics.Process.Start(psi)!;
+
+            // Drain both pipes concurrently with the wait. Redirected streams
+            // that nobody reads fill their OS buffer and then block the child
+            // on write — and eq-curvegen prints a full per-band table on every
+            // run, so this deadlocked WaitForExitAsync on real inputs.
+            var stdoutTask = proc.StandardOutput.ReadToEndAsync(_cts.Token);
+            var stderrTask = proc.StandardError.ReadToEndAsync(_cts.Token);
             await proc.WaitForExitAsync(_cts.Token);
+            var stdout = await stdoutTask;
+            var stderr = await stderrTask;
 
             if (proc.ExitCode == 0 && File.Exists(outputPath))
             {
@@ -254,12 +268,30 @@ public sealed class MainViewModel : ReactiveObject, IDisposable
                     StatusText = "CurveGen complete — correction applied";
                     return;
                 }
+                StatusText = "CurveGen produced an unexpected preset shape";
+                return;
             }
-            StatusText = "CurveGen failed — check that eq-curvegen is installed";
+
+            // Surface the child's own diagnostics instead of guessing at the
+            // cause; "check that eq-curvegen is installed" was wrong for every
+            // failure mode except a missing binary.
+            var detail = !string.IsNullOrWhiteSpace(stderr) ? stderr
+                       : !string.IsNullOrWhiteSpace(stdout) ? stdout
+                       : "no output";
+            Console.Error.WriteLine($"[CurveGen] exit {proc.ExitCode}: {detail}");
+            StatusText = $"CurveGen failed (exit {proc.ExitCode}) — see console for details";
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            StatusText = "CurveGen not found — is eq-curvegen installed and on PATH?";
         }
         catch (Exception ex)
         {
             StatusText = $"CurveGen error: {ex.Message}";
+        }
+        finally
+        {
+            try { Directory.Delete(workDir, recursive: true); } catch { /* best effort */ }
         }
     }
 
@@ -272,5 +304,6 @@ public sealed class MainViewModel : ReactiveObject, IDisposable
         _preampSubscription?.Dispose();
         _enabledSubscription?.Dispose();
         _ipc.Dispose();
+        _cts.Dispose();
     }
 }

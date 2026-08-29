@@ -3,6 +3,7 @@
 #include "kiss_fftr.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace DSP
 {
@@ -78,6 +79,10 @@ namespace DSP
             slot.assign(m_numBins, Complex{0.0f, 0.0f});
         m_activeFilter.store(0, std::memory_order_relaxed);
 
+        // Zero-padding scratch for SetImpulseResponse(), allocated once here
+        // so that function never allocates.
+        m_padScratch.assign(m_fftSize, 0.0f);
+
         const uint32_t tailLen = m_fftSize - m_blockSize;
         m_channelStates.clear();
         m_channelStates.resize(m_channels);
@@ -104,15 +109,30 @@ namespace DSP
         if (!m_fwdControl || taps == nullptr || length == 0 || length > m_maxImpulseLength)
             return false;
 
-        // Zero-pad to fftSize (non-RT scratch; this function is documented
-        // as non-RT precisely because of allocations like this one).
-        std::vector<float> padded(m_fftSize, 0.0f);
-        std::copy(taps, taps + length, padded.begin());
+        // Reject non-finite taps before they reach the FFT: a single NaN tap
+        // smears across every bin of the filter spectrum, and from there into
+        // every output sample of every channel, permanently. Same rationale as
+        // Biquad::SetCoefficients()'s finite check.
+        for (uint32_t i = 0; i < length; ++i)
+        {
+            if (!std::isfinite(taps[i]))
+                return false;
+        }
+
+        // Zero-pad to fftSize using the scratch buffer allocated in Prepare().
+        // This used to allocate a std::vector here on every call; that made
+        // the function impossible to call safely from anywhere near the audio
+        // thread, and daemon/pipewire_backend.cpp was doing exactly that. The
+        // buffer is now preallocated so the only remaining reason this
+        // function is non-RT is the FFT itself, which is bounded work.
+        std::fill(m_padScratch.begin(), m_padScratch.end(), 0.0f);
+        std::copy(taps, taps + length, m_padScratch.begin());
+        float* padded = m_padScratch.data();
 
         const uint32_t inactive = 1u - m_activeFilter.load(std::memory_order_relaxed);
         std::vector<Complex>& dst = m_filterSpectrum[inactive];
 
-        kiss_fftr(m_fwdControl, padded.data(), reinterpret_cast<kiss_fft_cpx*>(dst.data()));
+        kiss_fftr(m_fwdControl, padded, reinterpret_cast<kiss_fft_cpx*>(dst.data()));
 
         const float scale = 1.0f / static_cast<float>(m_fftSize);
         for (auto& c : dst)

@@ -15,9 +15,18 @@ Set all 10 band gains (dB). Changes are applied immediately (RT-safe atomic swap
 ```json
 { "cmd": "set_bands", "gains_db": [0.0, 1.5, -2.0, 0.0, 0.0, 3.0, 0.0, 0.0, -1.0, 0.0] }
 ```
+All ten values must be finite. A `NaN` or `Infinity` is rejected: it would
+otherwise reach the biquad, land in the filter history, and make every
+subsequent output sample `NaN` forever — no later valid curve can recover
+from that.
 
 ### `set_preamp`
-Set global preamp gain (dB).
+Set global preamp gain (dB). Must be a finite number in the range
+**[-60, +20] dB**; anything outside that, or a `NaN`/`Infinity`, is rejected
+with an error. The bound exists because the audio path turns this value into
+`pow(10, gain_db / 20)`: a large enough input overflows to `+Inf`, and
+`Inf * 0` (a silent sample) is `NaN`, which then propagates through the rest
+of the chain.
 ```json
 { "cmd": "set_preamp", "gain_db": -3.0 }
 ```
@@ -36,10 +45,16 @@ Enable or bypass the equalizer.
 
 ### `set_fir`
 Set the FIR (room-correction) impulse response taps. Applied via the same
-non-RT → RT handoff as `set_bands` (pending buffer + atomic dirty flag,
-consumed on the next audio callback). `taps` must be non-empty and no
-longer than 4096 samples (`EqState::kMaxFirTaps`); oversized or empty
-arrays are rejected with an error. Once set, the FIR stage becomes active:
+handoff as `set_bands`: the IPC thread stages the taps and a non-RT **control
+thread** in the audio backend picks them up and installs them. (It is not
+applied on the audio callback — computing the filter spectrum runs a full FFT
+and used to allocate; see `ARCHITECTURE.md` section 4.1.) Changes therefore
+take effect within a few milliseconds rather than on the very next callback.
+
+`taps` must be non-empty, no longer than 4096 samples
+(`EqState::kMaxFirTaps`), and all values finite; oversized, empty, and
+non-finite arrays are rejected with an error. Once set, the FIR stage becomes
+active:
 see `DSP::EqPipeline` in `ARCHITECTURE.md` §2.4 for the FIR/IIR execution
 order (FIR runs first, then IIR, when both are configured).
 ```json
@@ -84,8 +99,15 @@ no FIR is configured, i.e. `clear_fir` was called or it was never set).
 
 ### Error response
 ```json
-{ "ok": false, "error": "Invalid gains array length" }
+{ "ok": false, "error": "invalid gains_db array" }
 ```
+The `error` string is JSON-escaped. Some messages echo part of the request
+back (`unknown command: <cmd>`), so quotes, backslashes and control
+characters in the client's own input are escaped rather than spliced in raw —
+splicing them produced replies that were not parseable JSON.
+
+Connections are also dropped if a single command line exceeds
+`IpcServer::kMaxLineBytes` (1 MiB) without a terminating newline.
 
 ---
 

@@ -10,6 +10,19 @@
 #include "eq_state.h"
 #include "ipc_server.h"
 
+// audio_backend.h only *declares* CreateAudioBackend(); each platform supplies
+// the definition. On Linux that comes from pipewire_backend.cpp, a real
+// translation unit in the target, so nothing extra is needed here. The WASAPI
+// stub instead defines it `inline` in its header, and an inline function is
+// only emitted in a translation unit that odr-uses it -- so the TU that calls
+// it (this one) has to see the definition or the link fails with "unresolved
+// external symbol eq::CreateAudioBackend". Listing wasapi_backend.h in
+// DAEMON_SOURCES does not do that; CMake does not compile headers.
+#ifdef BACKEND_WASAPI
+#  include "wasapi_backend.h"
+#endif
+
+#include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <cstring>

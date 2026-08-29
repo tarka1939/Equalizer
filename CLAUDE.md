@@ -117,38 +117,97 @@ This repo should be kept clean and current:
 
 ## What to avoid / gotchas
 
-- **The Windows APO likely never applies the configured EQ curve.** In
-  `Equalizer/Equalizer.cpp`, `LockForProcess()` and `APOProcess()` each
-  declare their own function-local `static DSP::Equalizer10Band s_eq;` —
-  these are two *separate* objects that happen to share a name, not a shared
-  instance. The one `LockForProcess()` configures with the real band curve
-  is never touched again; the one `APOProcess()` actually runs audio through
-  is never `Prepare()`'d, so it silently degrades to a passthrough copy. See
-  `ARCHITECTURE.md` §7.1 for the full writeup and `Equalizer/tests/test_apo_dsp.cpp`
-  / `test_com_exports.cpp` for tests that pin down (not fix) this behavior.
-- **`Equalizer::m_gain` defaults to `0.0f`, not the `80%` its own comment
-  claims** (`Equalizer.h`: `float m_gain = 0.0f; // 80% volume`). Combined
-  with the point above, the shipped APO would currently output silence
-  before any explicit gain-setting call exists. See `ARCHITECTURE.md` §7.6.
+- **FIXED — the APO's two-`s_eq` bug and zero default gain.** Historically
+  `LockForProcess()` and `APOProcess()` each declared their own function-local
+  `static DSP::Equalizer10Band s_eq;` — two *separate* objects sharing a name,
+  so the configured curve was never the one processing audio — and
+  `m_gain` defaulted to `0.0f` behind a `// 80% volume` comment, zeroing every
+  sample. The EQ is now a member (`Equalizer::m_eq`) and `m_gain` defaults to
+  `1.0f`. Keep it that way: **don't reintroduce a function-local `static` for
+  DSP state here** (it is also process-wide shared state across instances —
+  latent today, since `u32MaxInstances` is 1, but the wrong shape). Note
+  `m_eq` brought a constraint the two separate statics did not have:
+  `LockForProcess()`'s `m_eq.Prepare()` reallocates buffers `APOProcess()`
+  reads, so **don't add on-the-fly reconfiguration here** without fencing the
+  RT callback off — see the comment on the member and `ARCHITECTURE.md` §7.1.
+  Pinned by
+  `ApoProcess_AppliesTheCurveConfiguredByLockForProcess` in
+  `Equalizer/tests/test_com_exports.cpp`, which drives the real
+  `LockForProcess()` → `APOProcess()` path and asserts the default curve's
+  +3 dB at 62 Hz is audible. `ARCHITECTURE.md` §7.1/§7.6 record the history.
 - **The WASAPI backend is a stub** (`daemon/wasapi_backend.h`) — `Open()`
   just logs and returns `false`; there is no real WASAPI capture/render
   code. Don't assume Windows daemon parity with the Linux/PipeWire path.
-  Also: `daemon/CMakeLists.txt`'s `PLATFORM_WINDOWS` branch references a
-  `wasapi_backend.cpp` that doesn't exist in the repo — configuring/building
-  the daemon on Windows will fail until that source file is added.
+  The CMake wiring now builds the header-only stub instead of referencing a
+  `wasapi_backend.cpp` that never existed. The Windows daemon target does now
+  configure, build, link and run (it starts, then exits 1 on
+  `"[IPC] Windows named pipe not yet implemented."`) — but note *how*:
+  `wasapi_backend.h` defines `CreateAudioBackend()` `inline`, and an inline
+  function is only emitted in a translation unit that odr-uses it, so
+  `main.cpp` includes that header directly under `#ifdef BACKEND_WASAPI`.
+  Listing the `.h` in `DAEMON_SOURCES` does *not* do this — CMake doesn't
+  compile headers — and for a while the target configured but failed at link
+  with `unresolved external symbol eq::CreateAudioBackend` while this file
+  claimed it linked fine. macOS and other platforms skip the `eq-daemon`
+  target entirely (no CoreAudio or stub backend source exists), with a
+  message rather than a configure-time failure.
 - **`daemon/tests/test_wasapi_backend.cpp` builds cross-platform *only
   because* the backend is still a stub** (no real Win32/WASAPI calls in it).
   Once it grows a real implementation, that test target needs to move behind
   `if(PLATFORM_WINDOWS)` in `daemon/CMakeLists.txt` like `eq-daemon` itself —
   it will stop building on Linux/macOS at that point.
-- **OverlapAdd engine exists but isn't wired into the live signal path yet**
-  (`DSP/OverlapAdd.{h,cpp}`) — it's unit tested in isolation
-  (`DSP/tests/test_overlap_add.cpp`) but nothing in `Equalizer/` or `daemon/`
-  calls it.
-- **This environment (and possibly others used to work on this repo) has no
-  Windows SDK, MSVC, or PipeWire dev headers.** The Windows-only test
-  projects (`Equalizer/tests/EqualizerRegistryUtilTests.vcxproj`,
-  `EqualizerComExportsTests.vcxproj`) and the real `eq-daemon`/PipeWire build
-  can't be compiled or run here — only inspected by reading. Don't report
-  them as passing/verified without actually building them on a machine that
-  has the right toolchain.
+- **`daemon/pipewire_backend.cpp` has never been compiled.** No machine used
+  on this project has had `libpipewire-0.3-dev`. Reviewing it against the
+  actual PipeWire API turned up wrong signatures for both event callbacks and
+  a mix-up between the `pw_filter_get_dsp_buffer()` and
+  `pw_filter_dequeue_buffer()` APIs — i.e. it could not have built as written.
+  Those are corrected *by reading the API*, not by building. Anything
+  PipeWire-facing in that file is unproven until someone compiles and runs it
+  on Linux. The threading structure around it (RT callback / control thread /
+  reconfiguration handshake) is independent of the PipeWire API and is the
+  part worth trusting.
+
+- **Nothing that allocates or runs an FFT may be called from an audio
+  callback**, and this is easy to get wrong indirectly: `EqPipeline::
+  SetBandsPeaking()` and `SetImpulseResponse()` look like simple setters but
+  are documented non-RT (transcendental math; a full FFT). `pipewire_backend`
+  used to call both straight from `OnProcess()`. They belong on the backend's
+  control thread — see `ARCHITECTURE.md` section 4.1.
+
+- **OverlapAdd is wired into the live signal path** via `DSP::EqPipeline`
+  (`DSP/EqPipeline.{h,cpp}`), which the PipeWire backend drives. The Windows
+  APO (`Equalizer/`) still does not use it — that path is IIR-only.
+- **MSVC and the Windows SDK *are* available on this machine** — Visual Studio
+  2026 Community (`C:\Program Files\Microsoft Visual Studio\18\Community`),
+  MSVC 14.51, Windows Kits 10, plus a CMake and Ninja bundled under
+  `Common7\IDE\CommonExtensions\Microsoft\CMake\`. None of them are on `PATH`;
+  source `VC\Auxiliary\Build\vcvars64.bat` first and prepend the bundled
+  CMake/Ninja directories. This entry previously claimed the opposite, and
+  that claim caused real bugs to sit unnoticed — the whole Windows build was
+  broken and nobody could see it. Verified working: the full CMake build and
+  `ctest` (7 tests), `Equalizer.vcxproj` → `Equalizer.dll`, and both
+  Windows-only test projects (`EqualizerRegistryUtilTests` 28 checks,
+  `EqualizerComExportsTests` 34 checks, 0 failures). **PipeWire dev headers
+  are still absent**, so `pipewire_backend.cpp` remains uncompiled — see the
+  entry above.
+- **Both Windows `.vcxproj` files need `<LanguageStandard>stdcpp17</LanguageStandard>`
+  and `runtimeobject.lib`.** MSVC defaults to C++14, so without the first the
+  build dies on `Diagnostics.h`'s `inline` variables (`error C7525`); without
+  the second it dies at link on `RoOriginateError`, which WRL's
+  `<wrl/module.h>` (used by `DllCanUnloadNow`) references. Both are set now in
+  all four configurations of each project — don't drop them, and add them to
+  any new `.vcxproj`.
+- **Headers go in `<ClInclude>`, never `<ClCompile>`, in a `.vcxproj`.**
+  `Equalizer.h` sat in `<ClCompile>` for a long time, so MSBuild handed it to
+  `cl.exe` as a `/TP` translation unit whose object (`Equalizer.obj`) landed
+  on the *same* `/Fo` path as the real one from `Equalizer.cpp`. Whichever was
+  written last won, which made the DLL link fail **intermittently** with
+  `unresolved external symbol CLSID_Equalizer` (plus the constructor and
+  `GetRegistrationProperties`). A full `/t:Rebuild` could succeed while the
+  next incremental build failed — easy to misdiagnose as a stale-object fluke.
+- **`daemon/tests/test_ipc_server.cpp` is POSIX-only** — it drives a real Unix
+  domain socket, matching `ipc_server.cpp`'s own `#ifndef _WIN32` body. Its
+  target is guarded by `if(NOT PLATFORM_WINDOWS)` in `daemon/CMakeLists.txt`;
+  it was previously unguarded, which broke the entire Windows CMake build on
+  `'sys/socket.h': No such file or directory`. Unguard it when the Windows
+  named-pipe implementation lands (`ARCHITECTURE.md` §7.2).
