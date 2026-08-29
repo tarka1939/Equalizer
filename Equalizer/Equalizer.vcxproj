@@ -194,7 +194,6 @@
     <ClCompile Include="ComExports.cpp" />
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="Equalizer.cpp" />
-    <ClCompile Include="Equalizer.h" />
     <ClCompile Include="RegistryUtil.cpp" />
     <ClCompile Include="kissfft-131.2.0\kiss_fft.c" />
     <ClCompile Include="kissfft-131.2.0\kiss_fftr.c" />
@@ -209,6 +208,14 @@
     <ClInclude Include="ApoDsp.h" />
     <ClInclude Include="BandEqualizer.h" />
     <ClInclude Include="Diagnostics.h" />
+    <!-- ClInclude, not ClCompile. Listed as a source, this header was handed
+         to cl.exe as a /TP translation unit, producing an "Equalizer.obj"
+         that collided with the real one from Equalizer.cpp in the same /Fo
+         directory. Whichever was written last won, so the DLL link failed
+         intermittently with "unresolved external symbol CLSID_Equalizer"
+         (and Equalizer's constructor, and GetRegistrationProperties) whenever
+         the header's essentially-empty object won the race. -->
+    <ClInclude Include="Equalizer.h" />
     <ClInclude Include="RegistryUtil.h" />
     <ClInclude Include="kissfft-131.2.0\kiss_fft.h" />
     <ClInclude Include="kissfft-131.2.0\kiss_fftr.h" />

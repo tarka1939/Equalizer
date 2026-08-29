@@ -8,7 +8,13 @@
 #include <wrl.h>
 
 // COM CLSID for this APO (defined in `Equalizer.cpp`).
-extern const CLSID CLSID_Equalizer;
+//
+// extern "C", matching the definition in Equalizer.cpp and the declaration in
+// tests/test_com_exports.cpp. This used to be declared with C++ linkage here
+// while being defined with C linkage there, so a translation unit that only
+// saw the header (ComExports.cpp) referenced the C++-mangled symbol while
+// Equalizer.cpp emitted the C one.
+extern "C" const CLSID CLSID_Equalizer;
 
 using namespace Microsoft::WRL;
 
@@ -80,14 +86,27 @@ private:
     // scopes lifetime, not identity across functions, so the instance
     // configured with the real band curve was never the one that processed
     // audio; the processing one was never Prepare()'d and so degraded to a
-    // silent passthrough copy. That is why the APO never audibly applied its
-    // curve (ARCHITECTURE.md section 7.1).
+    // passthrough copy (silence only once m_gain's 0.0f default was applied
+    // on top). That is why the APO never audibly applied its curve
+    // (ARCHITECTURE.md section 7.1).
     //
-    // Making it a member also fixes a second latent bug: a function-local
-    // static is shared by *every* Equalizer instance in the process. The
-    // audio engine can instantiate the APO more than once (per endpoint or
-    // per stream), and those instances would have shared one filter's
-    // coefficients and sample history.
+    // A function-local static is also process-wide shared state across every
+    // Equalizer instance, which is fragile on its own. That is latent rather
+    // than active today -- GetRegistrationProperties() reports
+    // u32MaxInstances = 1 -- but a member is the right shape regardless.
+    //
+    // THREADING: LockForProcess() calls m_eq.Prepare(), which resizes each
+    // Biquad's per-channel state vector (Biquad::Prepare -> m_states.resize),
+    // i.e. it reallocates buffers that APOProcess() reads. Those two must
+    // never overlap. They don't, because the APO contract only permits
+    // APOProcess() between LockForProcess() and UnlockForProcess() -- the
+    // same contract that already lets m_channels/m_maxFrameCount/
+    // m_formatLocked be written and read across those calls without
+    // synchronisation. Note this constraint did not exist while the two
+    // statics were separate objects, so don't add an on-the-fly
+    // reconfiguration path here without fencing the RT callback off first;
+    // see daemon/pipewire_backend.cpp's Begin/EndReconfigure for how the
+    // daemon side does it.
     DSP::Equalizer10Band m_eq;
 
     // Frame capacity of the locked connections (the smaller of the input and

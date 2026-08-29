@@ -124,9 +124,13 @@ This repo should be kept clean and current:
   `m_gain` defaulted to `0.0f` behind a `// 80% volume` comment, zeroing every
   sample. The EQ is now a member (`Equalizer::m_eq`) and `m_gain` defaults to
   `1.0f`. Keep it that way: **don't reintroduce a function-local `static` for
-  DSP state here.** Besides the two-object bug, a function-local static is
-  shared by every `Equalizer` instance in the process, and the audio engine
-  may instantiate the APO more than once. Pinned by
+  DSP state here** (it is also process-wide shared state across instances —
+  latent today, since `u32MaxInstances` is 1, but the wrong shape). Note
+  `m_eq` brought a constraint the two separate statics did not have:
+  `LockForProcess()`'s `m_eq.Prepare()` reallocates buffers `APOProcess()`
+  reads, so **don't add on-the-fly reconfiguration here** without fencing the
+  RT callback off — see the comment on the member and `ARCHITECTURE.md` §7.1.
+  Pinned by
   `ApoProcess_AppliesTheCurveConfiguredByLockForProcess` in
   `Equalizer/tests/test_com_exports.cpp`, which drives the real
   `LockForProcess()` → `APOProcess()` path and asserts the default curve's
@@ -193,6 +197,14 @@ This repo should be kept clean and current:
   `<wrl/module.h>` (used by `DllCanUnloadNow`) references. Both are set now in
   all four configurations of each project — don't drop them, and add them to
   any new `.vcxproj`.
+- **Headers go in `<ClInclude>`, never `<ClCompile>`, in a `.vcxproj`.**
+  `Equalizer.h` sat in `<ClCompile>` for a long time, so MSBuild handed it to
+  `cl.exe` as a `/TP` translation unit whose object (`Equalizer.obj`) landed
+  on the *same* `/Fo` path as the real one from `Equalizer.cpp`. Whichever was
+  written last won, which made the DLL link fail **intermittently** with
+  `unresolved external symbol CLSID_Equalizer` (plus the constructor and
+  `GetRegistrationProperties`). A full `/t:Rebuild` could succeed while the
+  next incremental build failed — easy to misdiagnose as a stale-object fluke.
 - **`daemon/tests/test_ipc_server.cpp` is POSIX-only** — it drives a real Unix
   domain socket, matching `ipc_server.cpp`'s own `#ifndef _WIN32` body. Its
   target is guarded by `if(NOT PLATFORM_WINDOWS)` in `daemon/CMakeLists.txt`;

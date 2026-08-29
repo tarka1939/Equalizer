@@ -659,10 +659,21 @@ project's own (currently non-functional) APO.
 
 **Fixed.** The EQ is now a single member, `Equalizer::m_eq`, that
 `LockForProcess()` prepares and configures and `APOProcess()` runs audio
-through. That also closes a second latent bug the function-local `static`
-carried: a function-local static is shared by *every* `Equalizer` instance in
-the process, so two APO instances (per endpoint or per stream) would have
-shared one filter's coefficients and sample history.
+through. A function-local static was also process-wide shared state across
+every `Equalizer` instance; that is latent rather than active today, since
+`GetRegistrationProperties()` reports `u32MaxInstances = 1`, but a member is
+the right shape regardless.
+
+One constraint this introduces, documented on the member's declaration:
+`m_eq.Prepare()` resizes each `Biquad`'s per-channel state vector, so it
+reallocates buffers `APOProcess()` reads. That is safe only because the APO
+contract confines `APOProcess()` to between `LockForProcess()` and
+`UnlockForProcess()` -- the same contract that already lets `m_channels` /
+`m_maxFrameCount` / `m_formatLocked` cross those calls unsynchronised. The
+constraint did not exist while the two statics were separate objects, so an
+on-the-fly reconfiguration path added here would need the RT callback fenced
+off first (see §4.1 and `daemon/pipewire_backend.cpp`'s
+`BeginReconfigure`/`EndReconfigure`).
 
 Verified on real code rather than by reading:
 `ApoProcess_AppliesTheCurveConfiguredByLockForProcess`
