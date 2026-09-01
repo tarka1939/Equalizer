@@ -54,11 +54,26 @@ call "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\v
 set "PATH=C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja;%PATH%"
 ```
 
+> ⚠️ **Enter those as two separate lines.** Do not join them with `&` on one
+> line, and do not wrap them in `cmd /c "... & ..."`. `cmd` expands `%PATH%`
+> when it *parses* the line, not when it runs it, so a one-liner substitutes
+> the PATH from **before** `vcvars64.bat` ran and silently discards everything
+> the batch file added — `cl` and `msbuild` then aren't found. The same
+> parse-time trap applies to `%errorlevel%`: `somecommand & echo %errorlevel%`
+> reports the code from the *previous* command. Use separate lines, or a `.bat`
+> file (which is parsed line by line).
+
 **Expected:** `cl`, `msbuild`, `cmake`, and `ninja` all resolve.
 
 ```cmd
-cl 2>&1 | findstr /C:"Version" && cmake --version && ninja --version
+where cl & where msbuild & where cmake & where ninja
 ```
+
+Verified output paths: `...\VC\Tools\MSVC\14.51.36231\bin\Hostx64\x64\cl.exe`,
+`...\MSBuild\Current\Bin\amd64\MSBuild.exe`, and the two bundled
+`...\CommonExtensions\Microsoft\CMake\...` entries. `INFO: Could not find files
+for the given pattern(s)` for `cl` or `msbuild` means the toolchain did not
+activate — re-read the warning above.
 
 > For 32-bit builds use `vcvars32.bat` instead. A 32-bit APO cannot load in the
 > x64 audio engine, so Win32 is a build-health check only, never a shipping
@@ -205,6 +220,11 @@ Validates the measurement → correction math against a synthetic room whose
 response is known in closed form. No microphone required. **Run this before
 every real measurement session** — it takes seconds and catches a broken
 install immediately.
+
+> Work in a scratch directory outside the repo, or expect `make_test_ir.py` to
+> show up as untracked. `*.wav` and `build/` are gitignored; a stray `.py` at
+> the repo root is not. If you run from elsewhere, invoke the venv by absolute
+> path instead of the relative `.venv\Scripts\...` shown below.
 
 ### 2.1 Generate a synthetic impulse response
 
