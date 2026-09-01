@@ -447,33 +447,78 @@ smooth_octave              blend + clip + preamp
   averaging in log-frequency space, band-by-band, with a hard skip for `f ≤ 0`
   (the DC bin) to avoid `log10(0)`.
 
-- **`flatten.py`**: `compute_correction` inverts the measured response
-  (`-meas_at_bands`) and then **references everything to 0 dB at 1 kHz**:
+- **`flatten.py`**: `compute_correction` builds a *target curve* and then
+  **solves** for the band gains that produce it.
 
-  ```python
-  ref_1khz_db = np.interp(np.log10(1000.0), log_freqs, magnitude_db)
-  gains_db += ref_1khz_db     # gain(f) = level(1kHz) - level(f)
-  ```
+  The target is `target(f) = level(1kHz) − level(f) + blend·harman(f)`
+  (`_target_curve`). The 1 kHz reference exists because `measurement.py`'s
+  output is on an *arbitrary, uncalibrated* scale (Welch PSD units, or raw
+  FFT magnitude — not dBFS or SPL), so there's no meaningful absolute "0 dB"
+  without picking a convention. 1 kHz is the standard audio-engineering
+  reference point.
 
-  This reference step exists because `measurement.py`'s output is on an
-  *arbitrary, uncalibrated* scale (Welch PSD units, or raw FFT magnitude —
-  not dBFS or SPL), so there's no meaningful absolute "0 dB" without picking
-  a convention. 1 kHz is the standard audio-engineering reference point.
-
-  **This means a real defect located exactly at 1 kHz is invisible to this
-  algorithm by construction** — the band at the reference frequency always
-  corrects to ~0, regardless of what's actually happening there, because
-  everything is measured *relative to* that band. This isn't a bug so much
-  as an inherent limitation of anchoring to a single reference frequency
-  without independent calibration; it's covered explicitly by
-  `test_boost_at_reference_frequency_is_self_cancelling` in
-  `tests/test_flatten.py`, specifically so the behavior stays visible and
+  **A real defect located exactly at 1 kHz is invisible to this algorithm by
+  construction** — everything is measured *relative to* that point, so the
+  delivered response there is always ~0 dB regardless of what is actually
+  happening. This isn't a bug so much as an inherent limitation of anchoring
+  to a single reference frequency without independent calibration; it's
+  covered explicitly by `test_boost_at_reference_frequency_is_self_cancelling`
+  in `tests/test_flatten.py`, specifically so the behavior stays visible and
   intentional rather than being rediscovered as a surprise later.
 
-  *(Historical note: this reference step had a sign bug — `-=` instead of
+  **The gain solver (`solve_cascade_gains`).**
+
+  The obvious implementation — and what this module did until recently — is
+  `gain[i] = target(band_hz[i])`: read the target at each band centre and ask
+  for exactly that. **That is only correct if the bands are independent, and
+  they are not.** They are a cascade of peaking biquads, and at the default
+  Q of 1.0 each is about an octave wide while the centres sit an octave
+  apart, so every band's correction leaks into its neighbours.
+
+  Measured on real hardware (`TEST_RESULTS.md`, and [issue #3]):
+  a −6.85 dB correction at 62 Hz dragged 125 Hz down an extra ~2–3 dB, so a
+  band that measured +1.40 dB *before* correction came out at −3.16 dB
+  *after* it. Iterating relocated the error rather than removing it.
+
+  `solve_cascade_gains` instead solves for the whole vector at once,
+
+  ```
+  minimise ‖A·g − target‖²  +  damping·‖g‖²     subject to |g[j]| ≤ max_gain_db
+  ```
+
+  over a log-spaced grid, where `A[i][j]` is the dB contribution at grid
+  frequency `i` of band `j` at unit gain. Cascaded biquads multiply in linear
+  magnitude and so **add in dB** (`response.evaluate_eq_response_db`, §2.2),
+  which is what makes the problem linear in `g` and lets
+  `scipy.optimize.lsq_linear` handle the bounds directly.
+
+  The linearity is not quite exact — a peaking filter's *skirt* shape depends
+  mildly on its own gain, so `A` is a derivative at unit gain rather than a
+  gain-independent basis — so the solve iterates Gauss-Newton style against
+  the true cascade response. It converges by the 4th iteration, and the
+  converged answer is better than the exact unconstrained solve of the
+  single-shot linear system (0.564 vs 0.612 dB RMS on a real measurement),
+  which is what shows the refinement is correcting real nonlinearity rather
+  than polishing round-off.
+
+  **Consequence worth internalising: band gains are no longer individually
+  interpretable.** A gain of −1 dB at a band whose measured response is flat
+  is not a bug; it is that band's share of a curve that is only meaningful as
+  a whole. Judge the solver by the *delivered* response, never by reading one
+  gain against one measured value.
+
+  `solver="pointwise"` still selects the old per-band inversion. It exists so
+  the defect stays reproducible in tests, not as a supported mode.
+
+  Note the auto-preamp calculation (`response.cascade_peak_db`) was already
+  cascade-aware; this brought the gain solver into line with it.
+
+  *(Historical note: the reference step once had a sign bug — `-=` instead of
   `+=` — that made every band's correction saturate to the clip limit on
   real measurements. Fixed; see git history and the "Testing" section
   below for how it was caught.)*
+
+  [issue #3]: https://github.com/tarka1939/Equalizer/issues/3
 
 - **`export.py`**: reads/writes the JSON preset format defined by
   [`shared/preset_schema.json`](shared/preset_schema.json) — `write_preset`
@@ -734,7 +779,10 @@ Windows 11 / MSVC 14.51.
 ### 7.4 `flatten.py`'s reference-frequency limitation
 
 Covered above in §6 — not re-stating it here, just cross-referencing so
-anyone skimming "Known issues" for a list doesn't miss it.
+anyone skimming "Known issues" for a list doesn't miss it. Note this is the
+*reference-frequency* limitation, which is inherent and still present. The
+separate cascade-overlap defect that used to live alongside it (band gains
+solved independently of one another) is fixed — see §6's "The gain solver".
 
 ### 7.5 Two independent preset (de)serializers
 
@@ -834,7 +882,7 @@ of the `WavEqTest` target.
 | RT/non-RT gain handoff | `daemon/tests/test_eq_state.cpp` | Default state, dirty-flag semantics, single-consume behavior, `pending_gains`/`current_gains` non-synchronization (§4.1) |
 | IPC protocol | `daemon/tests/test_ipc_server.cpp` | `set_bands` (valid + wrong-length), `set_preamp`, `set_enabled`, `get_state`, `load_preset` (documents stub), unknown command, empty line — all over a real Unix socket |
 | WAV/PSD/FFT measurement | `CurveGen/tests/test_measurement.py` | PCM normalization (int16/int32/uint8/float32/float64), peak-frequency accuracy for both Welch-PSD and FFT-IR paths, mono/stereo channel selection incl. modulo-wraparound, fractional-octave smoothing (DC-bin safety, spike smoothing, fraction sensitivity) |
-| Correction-curve math | `CurveGen/tests/test_flatten.py` | Flat-input/zero-correction, boost inversion, 1kHz self-cancellation (§6), clipping, auto-preamp sign, Harman blending, arbitrary band counts |
+| Correction-curve math | `CurveGen/tests/test_flatten.py` | Flat-input/zero-correction, boost inversion, 1kHz self-cancellation measured on the *delivered* response (§6), clipping, auto-preamp sign, Harman blending, arbitrary band counts. Plus `TestCascadeSolver`: a closed-form room (two peaking filters at band centres) corrected to <0.5 dB worst-case, cascade-vs-pointwise residual ratio, an already-flat band left undamaged by a large neighbouring correction, bound compliance, agreement with pointwise when bands are too far apart to overlap, broadband-tilt behaviour, and the sparse-band limitation. Several tests deliberately assert the *old* solver's wrong answers so the defect stays pinned. |
 | Preset serialization | `CurveGen/tests/test_export.py` | Round-trip, schema-mismatch errors, directory creation |
 | Measurement loader registry | `CurveGen/tests/test_loaders.py` | Extension auto-detection (incl. uppercase), explicit-format override, `wav` fallback for unrecognised extensions, `--ir` flag routing, unknown-format error message, register/overwrite semantics |
 | Visualization report (biquad eval + 4-stage build + render) | `CurveGen/tests/test_visualize.py`, `CurveGen/tests/test_cli_visualize.py` | 0dB-gain exact passthrough, single-band response equals its own gain at its own center frequency (independent of Q), cascaded-band dB additivity, `synthetic_freq_grid` bounds/monotonicity, `build_report` with/without stage 4, expected-output arithmetic vs. a manual recomputation, PNG actually rendered (with and without stage 4) via matplotlib's `Agg` backend, CLI end-to-end against synthetic WAVs |

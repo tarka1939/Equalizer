@@ -52,9 +52,11 @@ def _analyse(args: argparse.Namespace) -> tuple[list[float], "list[float]", floa
     # Smooth
     freqs, mag_db = measurement.smooth_octave(freqs, mag_db, fraction=1 / 3)
 
-    # Compute correction. `q` and `sr` only affect the auto-preamp headroom
-    # calculation, but they have to be the ones the playback chain will
-    # actually use or the headroom is computed for the wrong filter shape.
+    # Compute correction. `q` and `sr` must be the ones the playback chain will
+    # actually use. They feed the auto-preamp headroom calculation, and since
+    # the cascade solver landed they also determine the band gains themselves:
+    # Q sets how far each filter's skirt reaches into its neighbours, which is
+    # exactly what the solver is accounting for.
     gains_db, preamp_db = flatten.compute_correction(
         freqs, mag_db,
         max_gain_db=args.max_gain,
@@ -257,8 +259,9 @@ def main() -> None:
     p_meas.add_argument("--max-gain", type=float, default=12.0, help="Max gain per band in dB")
     p_meas.add_argument("--no-preamp", action="store_true", help="Disable auto preamp headroom")
     p_meas.add_argument("--q",        type=float, default=1.0,
-                        help="Q the playback chain will use; affects the auto-preamp "
-                             "headroom calculation only (default: 1.0)")
+                        help="Q the playback chain will use; affects both the solved "
+                             "band gains and the auto-preamp headroom, so it must "
+                             "match what actually gets applied (default: 1.0)")
     p_meas.add_argument("--name",     default="", help="Preset name (default: input filename)")
 
     # eqapo

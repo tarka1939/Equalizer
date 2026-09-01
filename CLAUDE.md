@@ -139,6 +139,22 @@ This repo should be kept clean and current:
   `Equalizer/tests/test_com_exports.cpp`, which drives the real
   `LockForProcess()` → `APOProcess()` path and asserts the default curve's
   +3 dB at 62 Hz is audible. `ARCHITECTURE.md` §7.1/§7.6 record the history.
+- **CurveGen band gains are solved against the cascade, not band by band —
+  so a single gain value means nothing on its own.** `flatten.compute_correction`
+  used to do `gain[i] = -measured(band_hz[i])`, which is wrong because the ten
+  Q=1 bands overlap heavily (an octave wide, an octave apart); a correction at
+  62 Hz drags 125 Hz with it. On real hardware that pushed an already-flat
+  +1.40 dB band to -3.16 dB. `solve_cascade_gains` now solves the whole vector
+  at once (bounded least-squares over a log grid, Gauss-Newton refined). Two
+  consequences to keep in mind: **(1)** don't "sanity check" a curve by
+  comparing one band's gain against the measured level at that frequency —
+  they are not supposed to match, and on a flat room every band can read ~-1 dB
+  legitimately; judge the *delivered* response via
+  `response.evaluate_eq_response_db`. **(2)** `q` and `sample_rate` now change
+  the gains, not just the auto-preamp headroom, so they must match what the
+  playback chain actually applies. `solver="pointwise"` still selects the old
+  behaviour, but only so tests can pin the defect. See `ARCHITECTURE.md` §6
+  "The gain solver" and issue #3.
 - **The WASAPI backend is a stub** (`daemon/wasapi_backend.h`) — `Open()`
   just logs and returns `false`; there is no real WASAPI capture/render
   code. Don't assume Windows daemon parity with the Linux/PipeWire path.

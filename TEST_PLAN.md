@@ -271,28 +271,48 @@ print("wrote synthetic_ir.wav")
 ```
  Band (Hz)  Correction (dB)
  ─────────  ───────────────
-      31    -2.35
-      62    -4.28
-     125    -9.56      <-- inverts the +8 dB room resonance
-     250    -4.21
-     500    -1.92
-    1000    +0.00      <-- reference frequency, always ~0 by construction
-    2000    +4.09      <-- inverts the -6 dB room dip
-    4000    +0.05
-    8000    -1.41
-   16000    -1.72
+      31    -1.57
+      62    -0.92
+     125    -9.01      <-- inverts the +8 dB room resonance
+     250    -0.98
+     500    -1.00
+    1000    -0.90
+    2000    +4.84      <-- fills the -6 dB room dip
+    4000    -0.97
+    8000    -1.30
+   16000    -1.99
 
- Preamp:    -3.78 dB
+ Preamp:    -4.07 dB
 ```
 
 **Pass criteria:**
 
-- 125 Hz is a large **negative** correction (≈ −9.6 dB) — the room's boost is being cut.
-- 2 kHz is a **positive** correction (≈ +4.1 dB) — the room's dip is being filled.
-- 1 kHz is ≈ 0.00 dB. This is structural: the algorithm references everything to
-  1 kHz, so a defect exactly at 1 kHz is invisible by construction
-  (`ARCHITECTURE.md` §6/§7.4).
+- 125 Hz is a large **negative** correction (≈ −9 dB) — the room's boost is being cut.
+- 2 kHz is a **positive** correction (≈ +4.8 dB) — the room's dip is being filled.
+- Every other band sits near **−1 dB**, all within a few tenths of each other.
 - Preamp is negative and roughly the cascade's worst-case boost.
+
+**Reading the flat bands.** The room is flat everywhere except 125 Hz and
+2 kHz, so those eight bands "should" read 0.00. They read ≈ −1 dB instead, and
+that is correct: the 2 kHz dip's skirt reaches down to 1 kHz, so the reference
+point itself sits ≈ 0.9 dB low, and every band is expressed relative to it. The
+result is a broadband −0.9 dB offset — a constant the preamp and your volume
+knob absorb. What matters is that the eight flat bands are *equal to each
+other*; a spread among them is the cascade-overlap defect (issue #3).
+
+> **These numbers changed when the cascade solver landed**, and the old ones
+> are a useful contrast. Pointwise inversion produced −2.35 / −4.28 / −9.56 /
+> −4.21 / −1.92 / 0.00 / +4.09 / +0.05 / −1.41 / −1.72: the flat bands scatter
+> across 4.3 dB instead of sitting together, because each band's gain was
+> chosen without asking what its neighbours were already doing. Residual error
+> against the known room fell from 2.27 dB RMS to 0.11 dB.
+
+- 1 kHz no longer reads exactly 0.00. That is expected and is not a
+  regression: with overlapping bands the gain *value* at the reference band is
+  not the response *delivered* there, and the solver targets the latter. The
+  underlying limitation is unchanged — a defect located exactly at 1 kHz is
+  still invisible, because everything is measured relative to it
+  (`ARCHITECTURE.md` §6/§7.4).
 
 **If 125 Hz comes back near zero or with the wrong sign**, the IR loader is
 mangling the input — that was a real bug (a full-length Hann window destroyed
@@ -305,7 +325,7 @@ Phase 1.4.
 type synthetic_config.txt
 ```
 
-**Expected:** a `Preamp: -3.78 dB` line followed by ten
+**Expected:** a `Preamp: -4.07 dB` line followed by ten
 `Filter N: ON PK Fc <hz> Hz Gain <db> dB Q 1.00` lines whose gains match the
 table above.
 
