@@ -140,6 +140,13 @@ cd CurveGen && pip install -e ".[dev]" && pytest tests/ -v
 # Equalizer/tests/EqualizerComExportsTests.vcxproj
 ```
 
+For end-to-end verification — from a cold checkout through a real acoustic
+room-correction loop — follow [`TEST_PLAN.md`](TEST_PLAN.md);
+[`TEST_RESULTS.md`](TEST_RESULTS.md) records what actually happened when it was
+run, including the measured convergence (RMS deviation 4.19 → 0.90 dB over two
+passes) and the defects the run exposed. Sweep capture and deconvolution
+tooling for that loop lives in [`CurveGen/tools/`](CurveGen/tools/).
+
 See [`ARCHITECTURE.md`](ARCHITECTURE.md#9-testing-strategy-whats-covered-what-isnt)
 for exactly what's covered and what isn't. The GUI still has no automated
 tests, and the Windows APO/WASAPI paths are now partially covered (the

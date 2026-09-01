@@ -112,6 +112,10 @@ This repo should be kept clean and current:
 - [`README.md`](README.md) — quick start, build, project structure
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — deep architecture reference
 - [`LOCAL_TEST_GUIDE.md`](LOCAL_TEST_GUIDE.md) — Guide to conducting tests
+- [`TEST_PLAN.md`](TEST_PLAN.md) — end-to-end verification procedure, cold
+  checkout through a real acoustic room-correction loop (phases 0–5)
+- [`TEST_RESULTS.md`](TEST_RESULTS.md) — what happened when it was run, with
+  the numbers. Read this before claiming any part of the system works.
 - [`REPORT_APO_INSTALL_ATTEMPTS.md`](REPORT_APO_INSTALL_ATTEMPTS.md) — Description of past problems with installation of APO on Windows machine
 - [`shared/ipc_protocol.md`](shared/ipc_protocol.md) — IPC command reference
 

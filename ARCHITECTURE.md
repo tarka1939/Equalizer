@@ -694,17 +694,42 @@ test stops discriminating and needs an explicit curve instead.
 `GUI/Services/IpcClient.cs::ConnectAsync()` immediately returns `false` on
 Windows (`// TODO: implement Named Pipe client`). Neither side of the
 protocol exists for Windows yet, so the GUI cannot currently control
-anything on Windows — not the daemon (which also doesn't build there; see
-§7.3) and not the APO DLL (which has no IPC of any kind, see §3).
+anything on Windows — not the daemon (which builds and runs there now, but
+has no audio backend and no IPC; see §7.3) and not the APO DLL (which has no
+IPC of any kind, see §3).
 
-### 7.3 `eq-daemon` does not build on Windows or macOS
+### 7.3 `eq-daemon` has no audio backend outside Linux (the build failures are FIXED)
 
-`daemon/CMakeLists.txt`'s `PLATFORM_WINDOWS` and `PLATFORM_MAC` branches
-reference `wasapi_backend.cpp` / `coreaudio_backend.cpp` as build sources;
-only the `.h` headers exist in the repo. Configuring CMake on those
-platforms would fail at the generation step once it tries to add those
-missing source files (or fail at compile/link time, depending on CMake
-version behavior). The daemon is Linux/PipeWire-only in its current state.
+This section used to say the daemon did not build on Windows or macOS at all,
+because `daemon/CMakeLists.txt`'s `PLATFORM_WINDOWS` and `PLATFORM_MAC`
+branches listed `wasapi_backend.cpp` / `coreaudio_backend.cpp` as sources and
+neither file has ever existed — CMake failed at the generation step. **That is
+fixed** (see §4.3 for the mechanics, including why listing the header in
+`DAEMON_SOURCES` was not enough on its own and `main.cpp` has to include
+`wasapi_backend.h` directly):
+
+| Platform | Configure | Build/link | Run |
+|---|---|---|---|
+| Linux | ✅ (needs `libpipewire-0.3-dev`) | unproven — never compiled, see §4.3 | unproven |
+| Windows | ✅ | ✅ | starts, then exits 1 on the IPC stub |
+| macOS / other | ✅ — target skipped with a message | n/a | n/a |
+
+**What has not changed is the part that matters for audio.** The Windows
+binary links the header-only `WasapiBackend` stub, whose `Open()` logs and
+returns `false`; there is no WASAPI capture or render code. And because the
+Windows IPC server is itself unimplemented (§7.2), `eq-daemon` on Windows
+starts, fails to bring up the IPC server, and exits 1 — it is a target that
+compiles, not a daemon that runs. macOS has no backend source of any kind, so
+its target is skipped rather than built.
+
+So the conclusion is unchanged even though the failure mode is: **`eq-daemon`
+is Linux/PipeWire-only in practice.** What is different is that a Windows
+CMake build of the whole repo now succeeds, which is what lets the DSP and
+daemon unit tests run there at all.
+
+Verified by execution rather than by reading: `TEST_RESULTS.md` Run 1, Phase
+1.1 (7/7 ctest) and Phase 1.6 (daemon smoke test, exit 1 on the IPC stub) on
+Windows 11 / MSVC 14.51.
 
 ### 7.4 `flatten.py`'s reference-frequency limitation
 

@@ -13,6 +13,8 @@ Related documents:
   register / verify / uninstall procedure referenced by Phase 4.
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) §7 — known gaps, cross-referenced below.
 - [`README.md`](README.md) — build overview.
+- [`TEST_RESULTS.md`](TEST_RESULTS.md) — what actually happened when this
+  plan was executed, including the Phase 3 numbers.
 
 ---
 
@@ -317,29 +319,64 @@ This is the primary path. It routes a generated curve through **Equalizer APO**
 
 > ### Read this before measuring
 >
-> **CurveGen has no capture tooling and no sweep deconvolution.** It only
-> *reads* WAV files. What you feed it matters enormously:
+> **The `curvegen` package has no capture tooling and does not deconvolve.**
+> It only *reads* WAV files. What you feed it matters enormously:
 >
 > | Input | Use | Result |
 > |---|---|---|
 > | Impulse response from REW, via `--ir` | ✅ **Do this** | Correct |
+> | Impulse response from `CurveGen/tools/capture.py`, via `--ir` | ✅ **Or this** | Correct — validated offline to ≤0.35 dB above 125 Hz |
 > | White noise recording, no `--ir` | ⚠️ Acceptable | Correct but a poor stimulus |
 > | **Pink noise recording, no `--ir`** | ❌ **Never** | Silently wrong — pink noise falls at −3 dB/octave by definition, which the pipeline "corrects" into a +3 dB/octave boost. Audibly far too bright, and nothing detects it. |
 >
-> Neither loader divides out the excitation signal. See the warning block at the
-> top of `CurveGen/curvegen/measurement.py`.
+> Neither loader divides out the excitation signal — deconvolution has to happen
+> before CurveGen sees the file, which is what REW and `capture.py` each do. See
+> the warning block at the top of `CurveGen/curvegen/measurement.py`.
 
 ### 3.1 Capture the "before" measurement
 
-Using [REW](https://www.roomeqwizard.com/):
+Either tool below produces an acceptable impulse response. **Option B is what
+the run recorded in `TEST_RESULTS.md` actually used**, because REW was not
+installed on that machine.
+
+#### Option A — [REW](https://www.roomeqwizard.com/)
 
 1. Calibrate the mic and set levels.
 2. Run a swept-sine measurement at the listening position.
 3. **Export the impulse response as WAV** (not the frequency response):
    `File → Export → Export impulse response as WAV`. Save as `room_before.wav`.
 
-**Expected:** a WAV whose peak is clearly visible near the start. Any peak
-position is fine — the loader centres it internally before windowing.
+#### Option B — in-repo sweep capture
+
+```cmd
+pip install sounddevice
+python -c "import sounddevice; print(sounddevice.query_devices())"
+```
+
+Set `OUT_DEV` / `IN_DEV` at the top of `CurveGen/tools/capture.py` from that
+listing, then, **from that directory** (`capture.py` imports `sweep` as a
+sibling):
+
+```cmd
+python capture.py room_before.wav 0.10
+```
+
+The second argument is playback amplitude. `capture.py` prints input peak and
+SNR per take and flags clipping — aim for a peak near −6 dBFS. Run a short
+ladder (0.06 / 0.10 / 0.13) and keep the best. If nothing gives both adequate
+peak and SNR, the room is too noisy; measure later rather than pushing the
+level. See [`CurveGen/tools/README.md`](CurveGen/tools/README.md).
+
+**Expected (either option):** a WAV whose peak is clearly visible near the
+start. Any peak position is fine — the loader centres it internally before
+windowing.
+
+> **Before trusting before/after comparisons, measure repeatability.** Take
+> three back-to-back measurements of an unchanged room and compare them
+> band-by-band. In the recorded run the spread above 100 Hz was 0.04 dB mean /
+> 0.09 dB max, which is what makes a later before/after difference signal
+> rather than scatter. An uncalibrated mic is fine for this — it only has to be
+> repeatable, not accurate — but see the caveat in §3.3.
 
 ### 3.2 Generate the correction curve
 
