@@ -430,12 +430,18 @@ Python 3, the room-correction measurement/curve-generation pipeline. Five
 modules, each independently testable and now independently tested:
 
 ```
-measurement.py          flatten.py              export.py           eqapo_export.py       cli.py
-──────────────          ──────────              ─────────           ───────────────       ──────
-load_wav /               compute_correction:      write_preset /      write_eqapo_config /  measure / eqapo /
-load_impulse_response    invert + reference to    read_preset /       render_eqapo_config   plot / send
-  → (freqs, mag_db, sr)    1kHz + optional Harman  preset_to_gains
-smooth_octave              blend + clip + preamp
+measurement.py          flatten.py               parametric.py         export.py         eqapo_export.py       cli.py
+──────────────          ──────────               ─────────────         ─────────         ───────────────       ──────
+load_wav /              compute_correction:      compute_parametric_   write_preset /    write_eqapo_config /  measure / eqapo /
+load_impulse_response     target curve             correction:         read_preset /     render_eqapo_config   visualize / plot /
+  → (freqs, mag_db, sr)     (invert, ref 1 kHz,    greedy seed +       preset_to_gains                         send
+smooth_octave               optional Harman)       joint refine of
+                          solve_cascade_gains      (Fc, Q, gain)                         ↑ only these two can
+                            (bounded LSQ over    solve_parametric_                         express per-filter Q
+                             the whole cascade)    filters                                 and N != 10 filters
+
+                        GRAPHIC: fixed grid,     PARAMETRIC: solver
+                        gains only               picks Fc and Q too
 ```
 
 - **`measurement.py`**: `load_wav` uses Welch's method (`scipy.signal.welch`,
@@ -519,6 +525,49 @@ smooth_octave              blend + clip + preamp
   below for how it was caught.)*
 
   [issue #3]: https://github.com/tarka1939/Equalizer/issues/3
+
+- **`parametric.py`**: the alternative to the fixed grid — the solver
+  chooses each filter's **centre frequency and Q** as well as its gain
+  (`eq-curvegen eqapo --mode parametric`). `flatten.py` answers "what gains,
+  given these ten bands at this Q?"; this answers "what filters?".
+
+  It exists because rooms do not put their defects on ISO band centres, and
+  because the two common defect shapes pull in opposite directions. A **narrow
+  room mode** — the dominant low-frequency problem — needs a high-Q filter
+  placed on it; a Q=1 band an octave wide gouges a broad hole around the mode
+  while barely denting it. A **broad tilt** is the reverse: fixed Q=1 bands
+  spend several filters on it and leave ripple. Measured against synthetic
+  rooms whose answer is known in closed form:
+
+  | Synthetic room | fixed 10-band grid | parametric |
+  |---|---|---|
+  | +10 dB at 90 Hz, Q 6 | 6.70 dB worst | **0.56 dB** (1 filter) |
+  | four defects, Q 0.8–5 | 4.25 dB | **0.47 dB** (4 filters) |
+  | Phase 2 room (§ above) | 1.09 dB | **0.01 dB** (2 filters) |
+  | −6 dB/decade tilt | 5.12 dB | **1.90 dB** (8 filters) |
+
+  The tilt is the honest weak case: it wants a *shelf*, and peaking filters
+  bounded to Q ≥ 0.5 can only approximate one.
+
+  The method is greedy seeding (place a filter on the largest remaining
+  deviation, with Q seeded from that deviation's own half-height bandwidth)
+  followed by joint refinement of every (Fc, Q, gain) at once, then a
+  merge/re-refine loop, then pruning. Three details are load-bearing and are
+  explained at length in the module docstring: Fc is optimised in **log10**
+  (the parameters otherwise differ in range by three decades and the solve
+  crawls); the residual is **centred**, because a constant dB offset is volume
+  rather than shape and letting the solver chase it wastes filters; and filter
+  count is controlled by an **early stop**, not by a gain penalty — an L2
+  penalty rewards splitting one filter into several, which is precisely the
+  degeneracy it was meant to prevent.
+
+  **Where a parametric curve can actually go: Equalizer APO only.** This was
+  checked rather than assumed. `eqapo_export` and `response` already handle any
+  filter count and per-filter Q, but `shared/preset_schema.json` pins `bands`
+  to exactly 10 entries, `DSP::Equalizer10Band` is `BandCount = 10` with a
+  *single shared* Q, and the IPC `set_bands` command carries gains only — no
+  centres, no Q. So `measure` (JSON preset) stays graphic-only, and widening
+  the DSP, the schema and the protocol is separate work. See issue #4.
 
 - **`export.py`**: reads/writes the JSON preset format defined by
   [`shared/preset_schema.json`](shared/preset_schema.json) — `write_preset`
@@ -882,6 +931,7 @@ of the `WavEqTest` target.
 | RT/non-RT gain handoff | `daemon/tests/test_eq_state.cpp` | Default state, dirty-flag semantics, single-consume behavior, `pending_gains`/`current_gains` non-synchronization (§4.1) |
 | IPC protocol | `daemon/tests/test_ipc_server.cpp` | `set_bands` (valid + wrong-length), `set_preamp`, `set_enabled`, `get_state`, `load_preset` (documents stub), unknown command, empty line — all over a real Unix socket |
 | WAV/PSD/FFT measurement | `CurveGen/tests/test_measurement.py` | PCM normalization (int16/int32/uint8/float32/float64), peak-frequency accuracy for both Welch-PSD and FFT-IR paths, mono/stereo channel selection incl. modulo-wraparound, fractional-octave smoothing (DC-bin safety, spike smoothing, fraction sensitivity) |
+| Parametric solver (free Fc/Q/gain) | `CurveGen/tests/test_parametric.py`, `CurveGen/tests/test_cli_parametric.py` | The issue #4 acceptance case (+10 dB at 90 Hz Q 6: neighbours disturbed <1 dB, and the fixed grid asserted to *fail* the same case), recovery of a four-defect room to <1 dB with a correctly-signed filter near each defect, beating the fixed grid on its own best case and on a broad tilt, gain/Q/frequency bound compliance, filter budget, ordering, non-positive preamp, zero-budget and flat-room degenerate paths, Harman tilting the delivered curve, and the coincident-filter merge. CLI tests drive real argparse end to end against a closed-form impulse response and assert the emitted Equalizer APO config's Fc/Q/gain per filter, plus that graphic mode remains the byte-identical default. |
 | Correction-curve math | `CurveGen/tests/test_flatten.py` | Flat-input/zero-correction, boost inversion, 1kHz self-cancellation measured on the *delivered* response (§6), clipping, auto-preamp sign, Harman blending, arbitrary band counts. Plus `TestCascadeSolver`: a closed-form room (two peaking filters at band centres) corrected to <0.5 dB worst-case, cascade-vs-pointwise residual ratio, an already-flat band left undamaged by a large neighbouring correction, bound compliance, agreement with pointwise when bands are too far apart to overlap, broadband-tilt behaviour, and the sparse-band limitation. Several tests deliberately assert the *old* solver's wrong answers so the defect stays pinned. |
 | Preset serialization | `CurveGen/tests/test_export.py` | Round-trip, schema-mismatch errors, directory creation |
 | Measurement loader registry | `CurveGen/tests/test_loaders.py` | Extension auto-detection (incl. uppercase), explicit-format override, `wav` fallback for unrecognised extensions, `--ir` flag routing, unknown-format error message, register/overwrite semantics |

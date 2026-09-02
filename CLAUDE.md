@@ -37,9 +37,12 @@ Equalizer/
 ├── CurveGen/                # Python acoustic curve generator
 │   └── curvegen/
 │       ├── measurement.py  # WAV loading, PSD, smoothing
-│       ├── flatten.py      # Inversion + Harman target blend
+│       ├── flatten.py      # Graphic solver: gains on a fixed 10-band grid
+│       ├── parametric.py   # Parametric solver: chooses Fc, Q and gain per filter
+│       ├── response.py     # Biquad cascade response model (mirrors DSP/Biquad.cpp)
 │       ├── export.py       # JSON preset write/read
-│       └── cli.py          # measure / plot / send
+│       └── cli.py          # measure / eqapo / visualize / plot / send
+│   └── tools/              # Sweep capture + Farina deconvolution (needs sounddevice)
 ├── Equalizer/               # Windows APO DLL (legacy)
 │   ├── ApoDsp.{h,cpp}      # Per-block gain/EQ/clamp math, extracted from APOProcess for testability (cross-platform)
 │   ├── RegistryUtil.{h,cpp} # Registry helpers behind Dll(Un)RegisterServer, parameterized by root HKEY (Windows-only)
@@ -155,6 +158,16 @@ This repo should be kept clean and current:
   playback chain actually applies. `solver="pointwise"` still selects the old
   behaviour, but only so tests can pin the defect. See `ARCHITECTURE.md` §6
   "The gain solver" and issue #3.
+- **A parametric curve can only be applied by Equalizer APO.**
+  `curvegen/parametric.py` (`eq-curvegen eqapo --mode parametric`) chooses each
+  filter's centre frequency and Q, not just its gain. `eqapo_export` and
+  `response` handle that fine, but **nothing else in the repo does**:
+  `shared/preset_schema.json` pins `bands` to exactly 10 entries,
+  `DSP::Equalizer10Band` is `BandCount = 10` with a *single shared* Q, and the
+  IPC `set_bands` command carries gains only. So don't wire parametric output
+  into `measure`, the JSON preset, the GUI or the daemon without widening those
+  three first. Graphic mode remains the default everywhere. See issue #4 and
+  `ARCHITECTURE.md` §6.
 - **The WASAPI backend is a stub** (`daemon/wasapi_backend.h`) — `Open()`
   just logs and returns `false`; there is no real WASAPI capture/render
   code. Don't assume Windows daemon parity with the Linux/PipeWire path.

@@ -416,8 +416,28 @@ listening:
   should not be trusted.
 
 Add `--max-gain 6` for a gentler first attempt, and `--q <value>` if you intend
-to change Q — it feeds both the headroom calculation and the emitted filters, so
+to change Q — it feeds both the solved gains and the headroom calculation, so
 they stay consistent.
+
+#### Optional: parametric mode
+
+The command above fits ten filters to the fixed ISO band centres at one shared
+Q. `--mode parametric` lets the solver choose each filter's centre frequency
+and Q instead:
+
+```cmd
+.venv\Scripts\eq-curvegen.exe eqapo --input room_before.wav --ir --mode parametric --output room_curve.txt
+```
+
+**Expected:** a table of filters — usually *fewer* than ten, each with its own
+Fc and Q — and a config whose `Filter` lines carry differing `Q` values. This
+fits real rooms considerably better, especially narrow low-frequency modes,
+which the fixed grid cannot place a filter on at all.
+
+**It only works through Equalizer APO.** The JSON preset schema and this
+project's own `DSP::Equalizer10Band` are both fixed at ten bands with a single
+shared Q, so `measure` has no parametric mode and a parametric curve cannot be
+loaded into the GUI or the daemon. See `ARCHITECTURE.md` §6.
 
 ### 3.3 Apply it
 

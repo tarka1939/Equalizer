@@ -85,6 +85,20 @@ project's own JSON preset format:
 eq-curvegen eqapo --input my_room.wav --output my_curve.txt --harman
 ```
 
+By default this writes ten filters on the fixed ISO band centres at a shared
+Q — the shape `DSP::Equalizer10Band` can apply. Add `--mode parametric` to let
+the solver choose each filter's centre frequency and Q as well:
+
+```bash
+eq-curvegen eqapo --input my_room.wav --ir --mode parametric --filters 8 --output my_curve.txt
+```
+
+That fits real defects far better — a narrow room mode at 90 Hz that the fixed
+grid leaves 6.7 dB out is corrected to 0.6 dB by a single filter — but the
+result is applicable **only through Equalizer APO**: the JSON preset schema and
+this project's own DSP are both fixed at ten bands with one shared Q. See
+[`ARCHITECTURE.md` §6](ARCHITECTURE.md#6-curvegen-curvegen).
+
 Then install Equalizer APO and either paste `my_curve.txt`'s contents into
 its `config.txt`, or reference it with an `Include: <path>` line. See
 [`ARCHITECTURE.md` §6](ARCHITECTURE.md#6-curvegen-curvegen) for why this
@@ -181,7 +195,9 @@ Equalizer/
 │   ├── pyproject.toml
 │   └── curvegen/
 │       ├── measurement.py  # WAV loading, PSD, smoothing
-│       ├── flatten.py      # Inversion + Harman target blend
+│       ├── flatten.py      # Graphic solver: gains on a fixed 10-band grid
+│       ├── parametric.py   # Parametric solver: picks Fc, Q and gain per filter
+│       ├── response.py     # Biquad cascade response model
 │       ├── export.py       # JSON preset write/read
 │       ├── loaders.py      # Pluggable measurement-file loader registry
 │       ├── visualize.py    # 4-stage FFT+CPB validation report builder
