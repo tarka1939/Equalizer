@@ -569,6 +569,41 @@ smooth_octave               optional Harman)       joint refine of
   centres, no Q. So `measure` (JSON preset) stays graphic-only, and widening
   the DSP, the schema and the protocol is separate work. See issue #4.
 
+- **`channels.py`**: channel identity and the multichannel curve container.
+  Room correction is per-speaker — a left speaker in a corner and a right one
+  beside a doorway do not share a response, and a single curve corrects
+  neither. `ChannelCurve` holds one speaker's filters; `MultiChannelCurve`
+  holds the set.
+
+  Channel naming follows Equalizer APO's documented `Channel:` command
+  (acronyms `L R C LFE RL RR RC SL SR`, 1-based numbers, or `all`), verified
+  against the official configuration reference. Note it is `LFE`, not `SUB`.
+
+  Two decisions here are easy to get wrong:
+
+  **The preamp is shared across channels, not per channel.** Each channel's
+  curve has its own headroom requirement and a per-channel preamp would fit
+  tighter — but it would also change one speaker's level relative to the
+  other, which moves the stereo image. Per-channel correction is meant to fix
+  each speaker's *response*, not re-balance the pair, so the applied preamp is
+  the most negative any channel needs.
+
+  **Inter-channel level imbalance is a gain, and is off by default.** If the
+  left speaker measures 2 dB quieter overall, that is *not* corrected unless
+  `--match-channels` is passed. With a single microphone a measured imbalance
+  is at least as likely to be the mic's position as the speakers, and
+  correcting it would shift the image permanently. When it is requested,
+  `level_offsets_db` cuts louder channels down to the quietest (never boosts,
+  so matching cannot introduce clipping) and the trim is emitted as a `Preamp`
+  line *inside* that channel's block.
+
+  The trim has to be a gain rather than a filter, and the obvious alternative
+  does not work: referencing each channel's target curve to a shared level
+  cannot express an imbalance, because `flatten._target_curve` is invariant to
+  a constant offset in its input and `parametric.solve_parametric_filters`
+  deliberately projects any constant out of its residual. A level difference
+  between speakers is exactly such a constant.
+
 - **`export.py`**: reads/writes the JSON preset format defined by
   [`shared/preset_schema.json`](shared/preset_schema.json) — `write_preset`
   doesn't itself validate against the JSON Schema (no `jsonschema.validate`
@@ -598,7 +633,23 @@ smooth_octave               optional Harman)       joint refine of
 
   `render_eqapo_config()` is a pure string-builder (`gains_db`, `band_hz`,
   `preamp_db`, `q` in → config text out); `write_eqapo_config()` writes it to
-  disk. This module only *writes* the format — it does not parse Equalizer
+  disk. `render_multichannel_eqapo_config()` takes a
+  `channels.MultiChannelCurve` and emits a `Channel:` block per speaker.
+
+  Two ordering properties in the multichannel output are load-bearing, because
+  `Channel:` scopes **both** `Filter` and `Preamp`:
+
+  - The shared preamp is emitted **before the first `Channel:` line**, so it
+    applies to every channel. Written inside a block it would attenuate one
+    speaker and leave the others clipping.
+  - The file **ends with `Channel: all`**. It is normally pulled in with an
+    `Include:` line and the selection persists across that, so without the
+    reset whatever the user wrote afterwards would silently apply to the last
+    channel of this file only.
+
+  Both are pinned by `CurveGen/tests/test_eqapo_multichannel.py`, since either
+  mistake produces a config that Equalizer APO loads without complaint and
+  applies incorrectly. This module only *writes* the format — it does not parse Equalizer
   APO's config files back in, and it has no runtime relationship to this
   project's own DSP; it is generated once and consumed entirely by the
   separate, third-party Equalizer APO application.
@@ -931,6 +982,7 @@ of the `WavEqTest` target.
 | RT/non-RT gain handoff | `daemon/tests/test_eq_state.cpp` | Default state, dirty-flag semantics, single-consume behavior, `pending_gains`/`current_gains` non-synchronization (§4.1) |
 | IPC protocol | `daemon/tests/test_ipc_server.cpp` | `set_bands` (valid + wrong-length), `set_preamp`, `set_enabled`, `get_state`, `load_preset` (documents stub), unknown command, empty line — all over a real Unix socket |
 | WAV/PSD/FFT measurement | `CurveGen/tests/test_measurement.py` | PCM normalization (int16/int32/uint8/float32/float64), peak-frequency accuracy for both Welch-PSD and FFT-IR paths, mono/stereo channel selection incl. modulo-wraparound, fractional-octave smoothing (DC-bin safety, spike smoothing, fraction sensitivity) |
+| Channels and multichannel export | `CurveGen/tests/test_channels.py`, `CurveGen/tests/test_eqapo_multichannel.py`, `CurveGen/tests/test_cli_channels.py` | Layout table against Equalizer APO's documented acronyms (incl. `LFE` not `SUB`, mono at `C`, numeric fallback), channel-spec parsing (comma/space, `all`, 1-based numbers, order, duplicates, and every rejection path), `ChannelCurve`/`MultiChannelCurve` validation and shared-worst-case preamp, level-offset maths (cuts only, never boosts). Export tests pin the two ordering properties — global preamp before the first `Channel:`, trailing `Channel: all` — plus per-channel filter numbering and the in-block level trim. CLI tests drive two *different* synthetic rooms (a 70 Hz mode on the left, a 3 kHz dip on the right) through both input forms and both solver modes, asserting the right filter lands on the right speaker and that the two channels do not get the same curve. |
 | Parametric solver (free Fc/Q/gain) | `CurveGen/tests/test_parametric.py`, `CurveGen/tests/test_cli_parametric.py` | The issue #4 acceptance case (+10 dB at 90 Hz Q 6: neighbours disturbed <1 dB, and the fixed grid asserted to *fail* the same case), recovery of a four-defect room to <1 dB with a correctly-signed filter near each defect, beating the fixed grid on its own best case and on a broad tilt, gain/Q/frequency bound compliance, filter budget, ordering, non-positive preamp, zero-budget and flat-room degenerate paths, Harman tilting the delivered curve, and the coincident-filter merge. CLI tests drive real argparse end to end against a closed-form impulse response and assert the emitted Equalizer APO config's Fc/Q/gain per filter, plus that graphic mode remains the byte-identical default. |
 | Correction-curve math | `CurveGen/tests/test_flatten.py` | Flat-input/zero-correction, boost inversion, 1kHz self-cancellation measured on the *delivered* response (§6), clipping, auto-preamp sign, Harman blending, arbitrary band counts. Plus `TestCascadeSolver`: a closed-form room (two peaking filters at band centres) corrected to <0.5 dB worst-case, cascade-vs-pointwise residual ratio, an already-flat band left undamaged by a large neighbouring correction, bound compliance, agreement with pointwise when bands are too far apart to overlap, broadband-tilt behaviour, and the sparse-band limitation. Several tests deliberately assert the *old* solver's wrong answers so the defect stays pinned. |
 | Preset serialization | `CurveGen/tests/test_export.py` | Round-trip, schema-mismatch errors, directory creation |

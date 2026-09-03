@@ -48,6 +48,18 @@ FreqResponse = Tuple[np.ndarray, np.ndarray, int]
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+def channel_count(path: str) -> int:
+    """How many channels a WAV file has.
+
+    Needed before a channel spec like `L,R` can be resolved, because the
+    acronym-to-index mapping depends on the layout (see curvegen/channels.py).
+    Reads the file rather than guessing; `scipy.io.wavfile` gives a 1-D array
+    for mono and (frames, channels) otherwise.
+    """
+    _, data = wavfile.read(path)
+    return 1 if data.ndim == 1 else int(data.shape[1])
+
+
 def load_wav(path: str, channel: int = 0) -> FreqResponse:
     """
     Load a WAV file and compute its magnitude frequency response via Welch's

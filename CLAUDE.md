@@ -39,6 +39,7 @@ Equalizer/
 │       ├── measurement.py  # WAV loading, PSD, smoothing
 │       ├── flatten.py      # Graphic solver: gains on a fixed 10-band grid
 │       ├── parametric.py   # Parametric solver: chooses Fc, Q and gain per filter
+│       ├── channels.py     # Channel layouts + per-channel curve containers
 │       ├── response.py     # Biquad cascade response model (mirrors DSP/Biquad.cpp)
 │       ├── export.py       # JSON preset write/read
 │       └── cli.py          # measure / eqapo / visualize / plot / send
@@ -158,6 +159,25 @@ This repo should be kept clean and current:
   playback chain actually applies. `solver="pointwise"` still selects the old
   behaviour, but only so tests can pin the defect. See `ARCHITECTURE.md` §6
   "The gain solver" and issue #3.
+- **Per-channel correction is Equalizer APO-only too, and its config
+  ordering is load-bearing.** `eq-curvegen eqapo --channels L,R` (or
+  `--channel-input L=left.wav --channel-input R=right.wav`) emits a `Channel:`
+  block per speaker. `Channel:` scopes **both** `Filter` and `Preamp`, so
+  (1) the shared preamp must stay *before* the first `Channel:` line or it
+  attenuates one speaker only, and (2) the file must end with `Channel: all`
+  or the selection leaks into whatever the user `Include:`s next. Both are
+  pinned by `tests/test_eqapo_multichannel.py`. Same downstream limit as
+  parametric mode: the JSON preset, the GUI and the daemon all carry a single
+  curve, so don't route multichannel output to them.
+- **Channel level imbalance is a gain, not a filter, and is off by default.**
+  `--match-channels` trims louder channels down to the quietest via a `Preamp`
+  line inside each channel block. Don't try to implement it by referencing the
+  channels' target curves to a shared level — that cannot work:
+  `flatten._target_curve` is invariant to a constant offset and
+  `parametric.solve_parametric_filters` projects constants out of its residual
+  by design. It is off by default because a single mic is rarely equidistant
+  from both speakers, so a measured imbalance is often geometry rather than the
+  speakers, and "correcting" it moves the stereo image permanently.
 - **A parametric curve can only be applied by Equalizer APO.**
   `curvegen/parametric.py` (`eq-curvegen eqapo --mode parametric`) chooses each
   filter's centre frequency and Q, not just its gain. `eqapo_export` and

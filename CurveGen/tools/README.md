@@ -33,7 +33,34 @@ python -c "import sounddevice; print(sounddevice.query_devices())"
 python capture.py room_before.wav 0.10
 ```
 
-The second argument is playback amplitude. Aim for an input peak near
+The second argument is playback amplitude.
+
+### Measuring one speaker at a time
+
+A correction curve is per-speaker, so the sweep has to come out of one speaker
+alone. Playing it through both at once measures their *sum* at the microphone,
+where the two arrivals comb-filter against each other — a result that describes
+neither speaker.
+
+```bash
+python capture.py room_L.wav --channel L      # one speaker
+python capture.py --channels L,R --prefix room  # both, in sequence
+```
+
+The second form prompts between takes and writes `room_L.wav` and
+`room_R.wav`, which is exactly what
+
+```bash
+eq-curvegen eqapo --channel-input L=room_L.wav --channel-input R=room_R.wav --ir --output curve.txt
+```
+
+consumes. `--channel` accepts `L`, `R`, `C`, `LFE`, `RL`, `RR`, `SL`, `SR`, a
+1-based number, or `all`; `--out-channels` sets how many output channels the
+device expects if it is not stereo.
+
+Only the playback routing knows about channels — `sweep.py`'s generation and
+deconvolution are untouched, so the validation below still covers the part that
+matters. Aim for an input peak near
 −6 dBFS with no clipping; `capture.py` prints peak and SNR after each take and
 flags clipping. If no level gives both adequate peak and SNR, the ambient noise
 floor is too high — measure when it is quieter rather than pushing the level.

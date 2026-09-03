@@ -439,6 +439,37 @@ project's own `DSP::Equalizer10Band` are both fixed at ten bands with a single
 shared Q, so `measure` has no parametric mode and a parametric curve cannot be
 loaded into the GUI or the daemon. See `ARCHITECTURE.md` §6.
 
+#### Optional: per-channel (left/right) correction
+
+Speakers in asymmetric positions need different curves. Measure each one
+separately — the sweep must come out of that speaker alone, or you measure the
+pair's sum at the mic rather than either speaker:
+
+```cmd
+cd CurveGen\tools
+python capture.py --channels L,R --prefix room
+```
+
+Then correct each channel on its own:
+
+```cmd
+.venv\Scripts\eq-curvegen.exe eqapo --channel-input L=room_L.wav --channel-input R=room_R.wav --ir --mode parametric --output room_curve.txt
+```
+
+**Expected:** a config with a `Channel: L` block and a `Channel: R` block whose
+filters differ, a single `Preamp:` line *before* both of them, and a closing
+`Channel: all`. Verify all three by eye — each is a correctness property, not
+cosmetics (`ARCHITECTURE.md` §6).
+
+Add `--match-channels` to also level-match the speakers to each other. Off by
+default: with one microphone a measured imbalance is often the mic's position
+rather than the speakers, and matching it moves the stereo image. If you use
+it, confirm the trim appears as a second `Preamp:` line *inside* the louder
+channel's block, and that it is negative.
+
+**Re-measure per channel too.** A combined stereo re-measurement cannot show
+whether each speaker was corrected; repeat 3.1 one speaker at a time.
+
 ### 3.3 Apply it
 
 1. Install Equalizer APO and select your output device in its Configurator.

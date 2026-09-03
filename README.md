@@ -99,6 +99,30 @@ result is applicable **only through Equalizer APO**: the JSON preset schema and
 this project's own DSP are both fixed at ten bands with one shared Q. See
 [`ARCHITECTURE.md` §6](ARCHITECTURE.md#6-curvegen-curvegen).
 
+### Per-channel (left/right) correction
+
+Speakers rarely sit in symmetric positions, so they rarely need the same
+curve. Measure each speaker on its own — the capture tooling can play the
+sweep through one channel at a time:
+
+```bash
+cd CurveGen/tools && python capture.py --channels L,R --prefix room
+```
+
+then generate one correction per channel:
+
+```bash
+eq-curvegen eqapo --channel-input L=room_L.wav --channel-input R=room_R.wav \
+                  --ir --mode parametric --output my_curve.txt
+```
+
+That writes a `Channel:` block per speaker. If you already have one
+multichannel measurement file, `--input room.wav --channels L,R` splits it
+instead. Add `--match-channels` to also trim level differences *between*
+speakers — off by default, because with a single microphone a measured
+imbalance is often the mic's position rather than the speakers. See
+[`ARCHITECTURE.md` §6](ARCHITECTURE.md#6-curvegen-curvegen).
+
 Then install Equalizer APO and either paste `my_curve.txt`'s contents into
 its `config.txt`, or reference it with an `Include: <path>` line. See
 [`ARCHITECTURE.md` §6](ARCHITECTURE.md#6-curvegen-curvegen) for why this
@@ -197,6 +221,7 @@ Equalizer/
 │       ├── measurement.py  # WAV loading, PSD, smoothing
 │       ├── flatten.py      # Graphic solver: gains on a fixed 10-band grid
 │       ├── parametric.py   # Parametric solver: picks Fc, Q and gain per filter
+│       ├── channels.py     # Channel layouts + per-channel curve containers
 │       ├── response.py     # Biquad cascade response model
 │       ├── export.py       # JSON preset write/read
 │       ├── loaders.py      # Pluggable measurement-file loader registry
