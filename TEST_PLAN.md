@@ -347,11 +347,20 @@ This is the primary path. It routes a generated curve through **Equalizer APO**
 > | Impulse response from REW, via `--ir` | ✅ **Do this** | Correct |
 > | Impulse response from `CurveGen/tools/capture.py`, via `--ir` | ✅ **Or this** | Correct — validated offline to ≤0.35 dB above 125 Hz |
 > | White noise recording, no `--ir` | ⚠️ Acceptable | Correct but a poor stimulus |
+> | **Sweep recording, no `--ir`** | ❌ **Never** | Silently wrong, and the easiest mistake to make now that this repo ships sweep tooling — analyse the *recording* instead of the deconvolved IR, or drop `--ir`, and you get this. Measured: −12.00 dB at 31 Hz, +12.00 dB at 16 kHz, two bands pinned at the clip limit, preamp −13.16 dB. |
 > | **Pink noise recording, no `--ir`** | ❌ **Never** | Silently wrong — pink noise falls at −3 dB/octave by definition, which the pipeline "corrects" into a +3 dB/octave boost. Audibly far too bright, and nothing detects it. |
 >
+> The sweep and pink-noise rows are the *same* failure at the *same* slope. A
+> log sweep is pink by construction: it spends equal time per octave, so it
+> deposits equal energy per octave, so its energy per hertz falls at
+> 3 dB/octave. Measured on `tools/sweep.py`'s own output: −3.02 dB/octave
+> against a theoretical −3.01. That is correct for the sweep and fatal for the
+> pipeline, which has no way to tell a sloped stimulus from a sloped room.
+>
 > Neither loader divides out the excitation signal — deconvolution has to happen
-> before CurveGen sees the file, which is what REW and `capture.py` each do. See
-> the warning block at the top of `CurveGen/curvegen/measurement.py`.
+> before CurveGen sees the file, which is what REW and `capture.py` each do
+> (`capture.py` writes the IR, never the raw recording, so the normal flow is
+> safe). See the warning block at the top of `CurveGen/curvegen/measurement.py`.
 
 ### 3.1 Capture the "before" measurement
 

@@ -73,6 +73,32 @@ The resulting WAV is an impulse response, so pass `--ir`:
 eq-curvegen eqapo --input room_before.wav --ir --output room_curve.txt
 ```
 
+### Never analyse the raw sweep or its recording
+
+`capture.py` writes the deconvolved impulse response, which is the only thing
+CurveGen should see. **A raw sweep — or a recording of one — is not a valid
+input, with or without `--ir`.**
+
+A log sweep is *pink*, not flat. Its time-domain amplitude is constant (every
+frequency is played at the same level, peak 1.0 throughout), but it spends
+equal *time* per octave and therefore deposits equal *energy* per octave — and
+each octave up is twice as wide in hertz, so energy per hertz halves. Measured
+on this sweep: every octave from 31 Hz to 16 kHz carries the same energy to
+within 0.01 dB, while the spectrum falls at **−3.02 dB/octave** (theory:
+−3.01).
+
+That slope is the whole point of the design: constant drive level protects the
+amplifier's headroom, while equal energy per octave puts the most energy at low
+frequencies, where room noise is worst and SNR is hardest to get. The
+`inverse_filter` rises at exactly +3.01 dB/octave to cancel it — the product of
+the two is flat to −0.00 dB/decade, which is why deconvolution yields a delta.
+
+But CurveGen has no way to distinguish a sloped *stimulus* from a sloped
+*room*. Analyse a raw sweep and it will confidently invert the sweep's own
+design into the curve: −12.00 dB at 31 Hz, +12.00 dB at 16 kHz, two bands
+pinned at the ±12 dB clip limit. See the input table in
+[`TEST_PLAN.md`](../../TEST_PLAN.md) §3.
+
 ## What has been verified
 
 `sweep.py`'s deconvolution is validated offline — synthesise a sweep, push it
