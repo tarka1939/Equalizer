@@ -37,9 +37,13 @@ Equalizer/
 ├── CurveGen/                # Python acoustic curve generator
 │   └── curvegen/
 │       ├── measurement.py  # WAV loading, PSD, smoothing
-│       ├── flatten.py      # Inversion + Harman target blend
+│       ├── flatten.py      # Graphic solver: gains on a fixed 10-band grid
+│       ├── parametric.py   # Parametric solver: chooses Fc, Q and gain per filter
+│       ├── channels.py     # Channel layouts + per-channel curve containers
+│       ├── response.py     # Biquad cascade response model (mirrors DSP/Biquad.cpp)
 │       ├── export.py       # JSON preset write/read
-│       └── cli.py          # measure / plot / send
+│       └── cli.py          # measure / eqapo / visualize / plot / send
+│   └── tools/              # Sweep capture + Farina deconvolution (needs sounddevice)
 ├── Equalizer/               # Windows APO DLL (legacy)
 │   ├── ApoDsp.{h,cpp}      # Per-block gain/EQ/clamp math, extracted from APOProcess for testability (cross-platform)
 │   ├── RegistryUtil.{h,cpp} # Registry helpers behind Dll(Un)RegisterServer, parameterized by root HKEY (Windows-only)
@@ -112,6 +116,10 @@ This repo should be kept clean and current:
 - [`README.md`](README.md) — quick start, build, project structure
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — deep architecture reference
 - [`LOCAL_TEST_GUIDE.md`](LOCAL_TEST_GUIDE.md) — Guide to conducting tests
+- [`TEST_PLAN.md`](TEST_PLAN.md) — end-to-end verification procedure, cold
+  checkout through a real acoustic room-correction loop (phases 0–5)
+- [`TEST_RESULTS.md`](TEST_RESULTS.md) — what happened when it was run, with
+  the numbers. Read this before claiming any part of the system works.
 - [`REPORT_APO_INSTALL_ATTEMPTS.md`](REPORT_APO_INSTALL_ATTEMPTS.md) — Description of past problems with installation of APO on Windows machine
 - [`shared/ipc_protocol.md`](shared/ipc_protocol.md) — IPC command reference
 
@@ -135,6 +143,51 @@ This repo should be kept clean and current:
   `Equalizer/tests/test_com_exports.cpp`, which drives the real
   `LockForProcess()` → `APOProcess()` path and asserts the default curve's
   +3 dB at 62 Hz is audible. `ARCHITECTURE.md` §7.1/§7.6 record the history.
+- **CurveGen band gains are solved against the cascade, not band by band —
+  so a single gain value means nothing on its own.** `flatten.compute_correction`
+  used to do `gain[i] = -measured(band_hz[i])`, which is wrong because the ten
+  Q=1 bands overlap heavily (an octave wide, an octave apart); a correction at
+  62 Hz drags 125 Hz with it. On real hardware that pushed an already-flat
+  +1.40 dB band to -3.16 dB. `solve_cascade_gains` now solves the whole vector
+  at once (bounded least-squares over a log grid, Gauss-Newton refined). Two
+  consequences to keep in mind: **(1)** don't "sanity check" a curve by
+  comparing one band's gain against the measured level at that frequency —
+  they are not supposed to match, and on a flat room every band can read ~-1 dB
+  legitimately; judge the *delivered* response via
+  `response.evaluate_eq_response_db`. **(2)** `q` and `sample_rate` now change
+  the gains, not just the auto-preamp headroom, so they must match what the
+  playback chain actually applies. `solver="pointwise"` still selects the old
+  behaviour, but only so tests can pin the defect. See `ARCHITECTURE.md` §6
+  "The gain solver" and issue #3.
+- **Per-channel correction is Equalizer APO-only too, and its config
+  ordering is load-bearing.** `eq-curvegen eqapo --channels L,R` (or
+  `--channel-input L=left.wav --channel-input R=right.wav`) emits a `Channel:`
+  block per speaker. `Channel:` scopes **both** `Filter` and `Preamp`, so
+  (1) the shared preamp must stay *before* the first `Channel:` line or it
+  attenuates one speaker only, and (2) the file must end with `Channel: all`
+  or the selection leaks into whatever the user `Include:`s next. Both are
+  pinned by `tests/test_eqapo_multichannel.py`. Same downstream limit as
+  parametric mode: the JSON preset, the GUI and the daemon all carry a single
+  curve, so don't route multichannel output to them.
+- **Channel level imbalance is a gain, not a filter, and is off by default.**
+  `--match-channels` trims louder channels down to the quietest via a `Preamp`
+  line inside each channel block. Don't try to implement it by referencing the
+  channels' target curves to a shared level — that cannot work:
+  `flatten._target_curve` is invariant to a constant offset and
+  `parametric.solve_parametric_filters` projects constants out of its residual
+  by design. It is off by default because a single mic is rarely equidistant
+  from both speakers, so a measured imbalance is often geometry rather than the
+  speakers, and "correcting" it moves the stereo image permanently.
+- **A parametric curve can only be applied by Equalizer APO.**
+  `curvegen/parametric.py` (`eq-curvegen eqapo --mode parametric`) chooses each
+  filter's centre frequency and Q, not just its gain. `eqapo_export` and
+  `response` handle that fine, but **nothing else in the repo does**:
+  `shared/preset_schema.json` pins `bands` to exactly 10 entries,
+  `DSP::Equalizer10Band` is `BandCount = 10` with a *single shared* Q, and the
+  IPC `set_bands` command carries gains only. So don't wire parametric output
+  into `measure`, the JSON preset, the GUI or the daemon without widening those
+  three first. Graphic mode remains the default everywhere. See issue #4 and
+  `ARCHITECTURE.md` §6.
 - **The WASAPI backend is a stub** (`daemon/wasapi_backend.h`) — `Open()`
   just logs and returns `false`; there is no real WASAPI capture/render
   code. Don't assume Windows daemon parity with the Linux/PipeWire path.

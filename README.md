@@ -85,6 +85,44 @@ project's own JSON preset format:
 eq-curvegen eqapo --input my_room.wav --output my_curve.txt --harman
 ```
 
+By default this writes ten filters on the fixed ISO band centres at a shared
+Q — the shape `DSP::Equalizer10Band` can apply. Add `--mode parametric` to let
+the solver choose each filter's centre frequency and Q as well:
+
+```bash
+eq-curvegen eqapo --input my_room.wav --ir --mode parametric --filters 8 --output my_curve.txt
+```
+
+That fits real defects far better — a narrow room mode at 90 Hz that the fixed
+grid leaves 6.7 dB out is corrected to 0.6 dB by a single filter — but the
+result is applicable **only through Equalizer APO**: the JSON preset schema and
+this project's own DSP are both fixed at ten bands with one shared Q. See
+[`ARCHITECTURE.md` §6](ARCHITECTURE.md#6-curvegen-curvegen).
+
+### Per-channel (left/right) correction
+
+Speakers rarely sit in symmetric positions, so they rarely need the same
+curve. Measure each speaker on its own — the capture tooling can play the
+sweep through one channel at a time:
+
+```bash
+cd CurveGen/tools && python capture.py --channels L,R --prefix room
+```
+
+then generate one correction per channel:
+
+```bash
+eq-curvegen eqapo --channel-input L=room_L.wav --channel-input R=room_R.wav \
+                  --ir --mode parametric --output my_curve.txt
+```
+
+That writes a `Channel:` block per speaker. If you already have one
+multichannel measurement file, `--input room.wav --channels L,R` splits it
+instead. Add `--match-channels` to also trim level differences *between*
+speakers — off by default, because with a single microphone a measured
+imbalance is often the mic's position rather than the speakers. See
+[`ARCHITECTURE.md` §6](ARCHITECTURE.md#6-curvegen-curvegen).
+
 Then install Equalizer APO and either paste `my_curve.txt`'s contents into
 its `config.txt`, or reference it with an `Include: <path>` line. See
 [`ARCHITECTURE.md` §6](ARCHITECTURE.md#6-curvegen-curvegen) for why this
@@ -140,6 +178,13 @@ cd CurveGen && pip install -e ".[dev]" && pytest tests/ -v
 # Equalizer/tests/EqualizerComExportsTests.vcxproj
 ```
 
+For end-to-end verification — from a cold checkout through a real acoustic
+room-correction loop — follow [`TEST_PLAN.md`](TEST_PLAN.md);
+[`TEST_RESULTS.md`](TEST_RESULTS.md) records what actually happened when it was
+run, including the measured convergence (RMS deviation 4.19 → 0.90 dB over two
+passes) and the defects the run exposed. Sweep capture and deconvolution
+tooling for that loop lives in [`CurveGen/tools/`](CurveGen/tools/).
+
 See [`ARCHITECTURE.md`](ARCHITECTURE.md#9-testing-strategy-whats-covered-what-isnt)
 for exactly what's covered and what isn't. The GUI still has no automated
 tests, and the Windows APO/WASAPI paths are now partially covered (the
@@ -174,7 +219,10 @@ Equalizer/
 │   ├── pyproject.toml
 │   └── curvegen/
 │       ├── measurement.py  # WAV loading, PSD, smoothing
-│       ├── flatten.py      # Inversion + Harman target blend
+│       ├── flatten.py      # Graphic solver: gains on a fixed 10-band grid
+│       ├── parametric.py   # Parametric solver: picks Fc, Q and gain per filter
+│       ├── channels.py     # Channel layouts + per-channel curve containers
+│       ├── response.py     # Biquad cascade response model
 │       ├── export.py       # JSON preset write/read
 │       ├── loaders.py      # Pluggable measurement-file loader registry
 │       ├── visualize.py    # 4-stage FFT+CPB validation report builder
